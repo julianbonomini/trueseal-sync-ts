@@ -53,7 +53,7 @@ import { HushSyncClient } from 'hush-sync-ts'
 
 const client = await HushSyncClient.create({
   relayHost: 'relay.example.com',
-  relayPublicKey: Buffer.from('<32-byte relay pub key, hex or base64>'),
+  relayPublicKey: Buffer.from('3f783127c25c91ac8ea02ab97edca78e5708e0c686fa0cc2e714c135c7cd095e', 'hex'),
   // storageDir defaults to ~/.hush-sync
   // namespace  defaults to "default"
 })
@@ -78,11 +78,13 @@ clientB.joinGroup(token)
 **Device A** — listens for the request and accepts:
 
 ```ts
-clientA.onMemberRequest((requestToken, name) => {
+clientA.on('memberRequest', (requestToken, name) => {
   console.log(`Pairing request from: ${name}`)
   clientA.acceptPairingRequest(requestToken)
 })
 ```
+
+> `onMemberRequest(fn)` is a convenience alias for `on('memberRequest', fn)`.
 
 Both sides fire `memberJoined` when pairing completes:
 
@@ -134,6 +136,21 @@ client.on('connectionChanged', (connected) => console.log('Relay:', connected ? 
 client.destroyGroup()
 // All devices receive groupDestroyed.
 // Every device rotates keypairs on next HushSyncClient.create().
+```
+
+### 8. Dispose (Electron / window teardown)
+
+Call `dispose()` to remove all event listeners and mark the client as spent.
+The underlying Rust session is GC’d; TSFNs are already `unref()`’d so they
+never prevent process exit.
+
+```ts
+// Explicit
+client.dispose()
+
+// TC39 'using' keyword (TypeScript 5.2+)
+using client = await HushSyncClient.create({ ... })
+// client.dispose() called automatically at end of block
 ```
 
 ---
