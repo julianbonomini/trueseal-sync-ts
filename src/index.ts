@@ -111,6 +111,7 @@ export declare interface HushSyncClient {
 
 export class HushSyncClient extends EventEmitter {
   private readonly _session: InstanceType<typeof native.HushSession>
+  private _disposed = false
 
   private constructor(session: InstanceType<typeof native.HushSession>) {
     super()
@@ -258,6 +259,36 @@ export class HushSyncClient extends EventEmitter {
     } catch (err) {
       throw new HushSyncError(String(err instanceof Error ? err.message : err))
     }
+  }
+
+  // ── Lifecycle ─────────────────────────────────────────────────────────────
+
+  /** `true` after {@link dispose} has been called. */
+  get disposed(): boolean {
+    return this._disposed
+  }
+
+  /**
+   * Release client resources:
+   * - removes all EventEmitter listeners so no callbacks fire on a
+   *   destroyed window or stale context
+   * - sets {@link disposed} to `true`
+   *
+   * The underlying relay connection is held by the Rust session and will be
+   * closed when it is garbage-collected. TSFNs are already `unref()`'d so
+   * they do not prevent process exit.
+   *
+   * Safe to call multiple times (idempotent).
+   */
+  dispose(): void {
+    if (this._disposed) return
+    this._disposed = true
+    this.removeAllListeners()
+  }
+
+  /** Alias for {@link dispose} — supports the TC39 `using` keyword. */
+  [Symbol.dispose](): void {
+    this.dispose()
   }
 
   // ── Internal ──────────────────────────────────────────────────────────────
