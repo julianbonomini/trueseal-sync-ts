@@ -1,10 +1,27 @@
 {
   "name": "hush-sync-ts",
   "version": "0.1.0",
-  "description": "Node.js / Electron bindings for hush-sync",
+  "description": "Node.js / Electron SDK for hush-sync — E2EE, local-first device sync without accounts or lock-in",
   "type": "commonjs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "homepage": "https://github.com/julianbonomini/hush-sync-ts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/julianbonomini/hush-sync-ts.git"
+  },
+  "keywords": [
+    "hush",
+    "sync",
+    "e2ee",
+    "encryption",
+    "noise-protocol",
+    "local-first",
+    "offline-first",
+    "napi",
+    "electron",
+    "node"
+  ],
   "exports": {
     ".": {
       "require": "./dist/index.js",
