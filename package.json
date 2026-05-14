@@ -2,12 +2,13 @@
   "name": "hush-sync-ts",
   "version": "0.1.0",
   "description": "Node.js / Electron bindings for hush-sync",
+  "type": "commonjs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
       "require": "./dist/index.js",
+      "default": "./dist/index.js",
       "types": "./dist/index.d.ts"
     }
   },
