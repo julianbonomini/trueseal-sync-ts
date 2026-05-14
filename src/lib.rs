@@ -1,5 +1,7 @@
 #![deny(clippy::all)]
 
+mod session;
+
 use napi_derive::napi;
 
 /// Returns the crate version. Used as a build-chain smoke test.

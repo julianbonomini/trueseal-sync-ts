@@ -11,6 +11,7 @@ crate-type = ["cdylib"]
 [dependencies]
 napi = { version = "2", default-features = false, features = ["napi4", "async"] }
 napi-derive = "2"
+hush-sync = { path = "../hush-sync" }
 
 [build-dependencies]
 napi-build = "2"

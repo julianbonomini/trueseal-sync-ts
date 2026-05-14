@@ -8,7 +8,7 @@
   "scripts": {
     "build": "napi build --platform --release",
     "build:debug": "napi build --platform",
-    "test": "node --test '__tests__/**/*.mjs'"
+    "test": "node --test --test-force-exit '__tests__/**/*.mjs'"
   },
   "napi": {
     "binaryName": "hush-sync-ts",
