@@ -252,6 +252,12 @@ export class HushSyncClient extends EventEmitter {
   /**
    * Encrypt `blob` and fan it out to all current Sync Group members.
    * Throws {@link HushSyncError} if this device is not yet in a group.
+   *
+   * @note The underlying Rust call is synchronous. The `async` signature is
+   * intentional: it future-proofs the API for when `send` is moved off the
+   * main thread, and keeps call-site ergonomics consistent with other
+   * async-style APIs in hush-sync. `await client.send(...)` works correctly
+   * and never suspends the event loop.
    */
   async send(blob: Buffer): Promise<void> {
     try {
