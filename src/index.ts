@@ -216,12 +216,20 @@ export class HushSyncClient extends EventEmitter {
 
   /** Admit a pending device by the opaque `requestToken` from {@link onMemberRequest}. */
   acceptPairingRequest(requestToken: string): boolean {
-    return this._session.acceptMember(requestToken)
+    try {
+      return this._session.acceptMember(requestToken)
+    } catch (err) {
+      throw new HushSyncError(String(err instanceof Error ? err.message : err))
+    }
   }
 
   /** Close the pairing window without admitting any device. */
   cancelPairing(): void {
-    this._session.cancelPairing()
+    try {
+      this._session.cancelPairing()
+    } catch (err) {
+      throw new HushSyncError(String(err instanceof Error ? err.message : err))
+    }
   }
 
   // ── Sync ──────────────────────────────────────────────────────────────────
@@ -245,7 +253,11 @@ export class HushSyncClient extends EventEmitter {
    * All members receive a `groupDestroyed` event. Session is terminal after this.
    */
   destroyGroup(): void {
-    this._session.destroyGroup()
+    try {
+      this._session.destroyGroup()
+    } catch (err) {
+      throw new HushSyncError(String(err instanceof Error ? err.message : err))
+    }
   }
 
   // ── Internal ──────────────────────────────────────────────────────────────
