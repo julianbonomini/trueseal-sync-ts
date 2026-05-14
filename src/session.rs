@@ -321,23 +321,9 @@ impl HushSession {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
 /// Encode raw bytes as a URL-safe base64 string (no padding).
 fn bytes_to_base64url(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut out = String::with_capacity((bytes.len() * 4 + 2) / 3);
-    for chunk in bytes.chunks(3) {
-        let b0 = chunk[0] as usize;
-        let b1 = if chunk.len() > 1 { chunk[1] as usize } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as usize } else { 0 };
-        out.push(ALPHABET[b0 >> 2] as char);
-        out.push(ALPHABET[((b0 & 3) << 4) | (b1 >> 4)] as char);
-        if chunk.len() > 1 {
-            out.push(ALPHABET[((b1 & 0xf) << 2) | (b2 >> 6)] as char);
-        }
-        if chunk.len() > 2 {
-            out.push(ALPHABET[b2 & 0x3f] as char);
-        }
-    }
-    out
+    URL_SAFE_NO_PAD.encode(bytes)
 }

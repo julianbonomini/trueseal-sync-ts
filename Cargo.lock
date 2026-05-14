@@ -753,6 +753,7 @@ dependencies = [
 name = "hush-sync-ts"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "hush-sync",
  "napi",
  "napi-build",

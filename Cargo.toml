@@ -12,6 +12,7 @@ crate-type = ["cdylib"]
 napi = { version = "2", default-features = false, features = ["napi4", "async"] }
 napi-derive = "2"
 hush-sync = { path = "../hush-sync" }
+base64 = "0.22"
 
 [build-dependencies]
 napi-build = "2"
