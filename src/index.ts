@@ -100,6 +100,11 @@ export declare interface HushSyncClient {
   on(event: 'groupDestroyed', listener: () => void): this
   /** Relay connection state changed. */
   on(event: 'connectionChanged', listener: (connected: boolean) => void): this
+  /**
+   * A remote device is requesting to join the Sync Group.
+   * Call {@link acceptPairingRequest} with `requestToken` to admit it.
+   */
+  on(event: 'memberRequest', listener: (requestToken: string, name: string) => void): this
 
   off(event: 'message', listener: (blob: Buffer, senderId: string) => void): this
   off(event: 'memberJoined', listener: (member: Member) => void): this
@@ -107,6 +112,7 @@ export declare interface HushSyncClient {
   off(event: 'removedFromGroup', listener: () => void): this
   off(event: 'groupDestroyed', listener: () => void): this
   off(event: 'connectionChanged', listener: (connected: boolean) => void): this
+  off(event: 'memberRequest', listener: (requestToken: string, name: string) => void): this
 }
 
 export class HushSyncClient extends EventEmitter {
@@ -211,8 +217,16 @@ export class HushSyncClient extends EventEmitter {
    * Register a listener for incoming pairing requests.
    * Call {@link acceptPairingRequest} with `requestToken` to admit the device.
    */
+  /**
+   * Convenience alias for `on('memberRequest', listener)`.
+   *
+   * A remote device is requesting to join the Sync Group. When the event fires,
+   * call {@link acceptPairingRequest} with `requestToken` to admit it.
+   *
+   * Multiple listeners are supported and removable with `off('memberRequest', fn)`.
+   */
   onMemberRequest(listener: (requestToken: string, name: string) => void): void {
-    this._session.setOnMemberRequest(listener)
+    this.on('memberRequest', listener)
   }
 
   /** Admit a pending device by the opaque `requestToken` from {@link onMemberRequest}. */
@@ -299,6 +313,9 @@ export class HushSyncClient extends EventEmitter {
     })
     this._session.setOnMemberLeft((id: string, name: string) => {
       _safeEmit(this, 'memberLeft', { id, name })
+    })
+    this._session.setOnMemberRequest((token: string, name: string) => {
+      _safeEmit(this, 'memberRequest', token, name)
     })
     // on_message, on_removed_from_group, on_group_destroyed, on_connection_changed
     // are wired at construction time via the native.HushSession constructor.
