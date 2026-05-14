@@ -1,4 +1,4 @@
-// RED: HushSyncClient TypeScript wrapper.
+// RED: TruesealSyncClient TypeScript wrapper.
 // Tests verify the clean public API surface — no raw NAPI types exposed.
 import { strictEqual, ok, throws, rejects, deepStrictEqual } from 'node:assert'
 import { test } from 'node:test'
@@ -7,13 +7,13 @@ import { join } from 'node:path'
 import { mkdtempSync } from 'node:fs'
 
 // Will throw if src/index.ts hasn't been compiled yet → RED
-import { HushSyncClient, HushSyncError } from '../dist/index.js'
+import { TruesealSyncClient, TruesealSyncError } from '../dist/index.js'
 
 const RELAY_PUB = Buffer.alloc(32, 0x01)
-const TMP = () => mkdtempSync(join(tmpdir(), 'hush-ts-test-'))
+const TMP = () => mkdtempSync(join(tmpdir(), 'trueseal-ts-test-'))
 
 function makeClient(dir = TMP()) {
-  return HushSyncClient.create({
+  return TruesealSyncClient.create({
     relayHost: '127.0.0.1',
     relayPublicKey: RELAY_PUB,
     storageDir: dir,
@@ -23,21 +23,21 @@ function makeClient(dir = TMP()) {
 
 // ── Construction ──────────────────────────────────────────────────────────────
 
-test('HushSyncClient.create() returns a client instance', async () => {
+test('TruesealSyncClient.create() returns a client instance', async () => {
   const client = await makeClient()
-  ok(client instanceof HushSyncClient, 'is HushSyncClient')
+  ok(client instanceof TruesealSyncClient, 'is TruesealSyncClient')
 })
 
-test('HushSyncClient.create() throws HushSyncError on bad relay key', async () => {
+test('TruesealSyncClient.create() throws TruesealSyncError on bad relay key', async () => {
   await rejects(
-    () => HushSyncClient.create({
+    () => TruesealSyncClient.create({
       relayHost: '127.0.0.1',
       relayPublicKey: Buffer.alloc(4),   // wrong length
       storageDir: TMP(),
       namespace: 'default',
     }),
     (err) => {
-      ok(err instanceof HushSyncError, 'is HushSyncError')
+      ok(err instanceof TruesealSyncError, 'is TruesealSyncError')
       return true
     }
   )
@@ -85,22 +85,22 @@ test('on() accepts all typed event names', async () => {
 
 // ── send() before pairing ─────────────────────────────────────────────────────
 
-test('send() before pairing rejects with HushSyncError.notInGroup', async () => {
+test('send() before pairing rejects with TruesealSyncError.notInGroup', async () => {
   const client = await makeClient()
   await rejects(
     () => client.send(Buffer.from('hello')),
     (err) => {
-      ok(err instanceof HushSyncError, `expected HushSyncError, got ${err}`)
+      ok(err instanceof TruesealSyncError, `expected TruesealSyncError, got ${err}`)
       return true
     }
   )
 })
 
-// ── HushSyncError ─────────────────────────────────────────────────────────────
+// ── TruesealSyncError ─────────────────────────────────────────────────────────────
 
-test('HushSyncError is an Error subclass', () => {
-  const e = new HushSyncError('test message')
+test('TruesealSyncError is an Error subclass', () => {
+  const e = new TruesealSyncError('test message')
   ok(e instanceof Error)
-  ok(e instanceof HushSyncError)
+  ok(e instanceof TruesealSyncError)
   strictEqual(e.message, 'test message')
 })

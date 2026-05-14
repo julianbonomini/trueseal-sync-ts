@@ -1,8 +1,8 @@
 [package]
-name = "hush-sync-ts"
+name = "trueseal-sync-ts"
 version = "0.1.0"
 edition = "2021"
-description = "Node.js / Electron bindings for hush-sync"
+description = "Node.js / Electron bindings for trueseal-sync"
 license = "Apache-2.0"
 
 [lib]
@@ -11,13 +11,13 @@ crate-type = ["cdylib"]
 [dependencies]
 napi = { version = "2", default-features = false, features = ["napi4", "async"] }
 napi-derive = "2"
-hush-sync = { path = "../hush-sync" }
+trueseal-sync = { path = "../trueseal-sync" }
 base64 = "0.22"
 
 [build-dependencies]
 napi-build = "2"
 
-# ── hush-sync (sibling checkout) ────────────────────────────────────────────
+# ── trueseal-sync (sibling checkout) ────────────────────────────────────────────
 # Switch to a git dep when both repos are public:
-#   hush-sync = { git = "https://github.com/julianbonomini/hush-sync" }
+#   trueseal-sync = { git = "https://github.com/julianbonomini/trueseal-sync" }
 [dev-dependencies]

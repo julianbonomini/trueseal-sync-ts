@@ -1,6 +1,6 @@
 // Tests for P5: dispose() / Symbol.dispose cleanup API.
 //
-// HushSyncClient holds TSFNs that are unref()'d, so they won't prevent
+// TruesealSyncClient holds TSFNs that are unref()'d, so they won't prevent
 // process exit. But users need an explicit teardown path for:
 //   - Electron window close / beforeunload
 //   - Re-pairing (create fresh client after destroying group)
@@ -19,13 +19,13 @@ import { join } from 'node:path'
 import { mkdtempSync } from 'node:fs'
 
 import indexPkg from '../dist/index.js'
-const { HushSyncClient } = indexPkg
+const { TruesealSyncClient } = indexPkg
 
 const RELAY_PUB = Buffer.alloc(32, 0x01)
-const TMP = () => mkdtempSync(join(tmpdir(), 'hush-p5-test-'))
+const TMP = () => mkdtempSync(join(tmpdir(), 'trueseal-p5-test-'))
 
 async function makeClient() {
-  return HushSyncClient.create({
+  return TruesealSyncClient.create({
     relayHost: '127.0.0.1',
     relayPublicKey: RELAY_PUB,
     storageDir: TMP(),

@@ -1,4 +1,4 @@
-// RED: public entrypoint — package importable as 'hush-sync-ts'
+// RED: public entrypoint — package importable as 'trueseal-sync-ts'
 // Tests verify ESM and CJS resolution both work correctly.
 import { strictEqual, ok } from 'node:assert'
 import { test } from 'node:test'
@@ -8,33 +8,33 @@ const require = createRequire(import.meta.url)
 
 // ── CJS require ───────────────────────────────────────────────────────────────
 
-test('CJS require resolves HushSyncClient', () => {
+test('CJS require resolves TruesealSyncClient', () => {
   const mod = require('../')   // resolves via package.json "main"
-  ok(mod.HushSyncClient, 'HushSyncClient exported')
-  ok(mod.HushSyncError,  'HushSyncError exported')
-  strictEqual(typeof mod.HushSyncClient, 'function')
-  strictEqual(typeof mod.HushSyncError,  'function')
+  ok(mod.TruesealSyncClient, 'TruesealSyncClient exported')
+  ok(mod.TruesealSyncError,  'TruesealSyncError exported')
+  strictEqual(typeof mod.TruesealSyncClient, 'function')
+  strictEqual(typeof mod.TruesealSyncError,  'function')
 })
 
 // ── ESM import ────────────────────────────────────────────────────────────────
 
-test('ESM import resolves HushSyncClient', async () => {
+test('ESM import resolves TruesealSyncClient', async () => {
   // Dynamic import uses package.json "exports"
   const mod = await import('../dist/index.js')
-  ok(mod.HushSyncClient, 'HushSyncClient exported via ESM')
-  ok(mod.HushSyncError,  'HushSyncError exported via ESM')
+  ok(mod.TruesealSyncClient, 'TruesealSyncClient exported via ESM')
+  ok(mod.TruesealSyncError,  'TruesealSyncError exported via ESM')
 })
 
 // ── Type exports ──────────────────────────────────────────────────────────────
 
-test('HushSyncError is an Error subclass', () => {
-  const { HushSyncError } = require('../')
-  const e = new HushSyncError('test')
+test('TruesealSyncError is an Error subclass', () => {
+  const { TruesealSyncError } = require('../')
+  const e = new TruesealSyncError('test')
   ok(e instanceof Error)
-  ok(e instanceof HushSyncError)
+  ok(e instanceof TruesealSyncError)
 })
 
-test('HushSyncClient.create is a function', () => {
-  const { HushSyncClient } = require('../')
-  strictEqual(typeof HushSyncClient.create, 'function')
+test('TruesealSyncClient.create is a function', () => {
+  const { TruesealSyncClient } = require('../')
+  strictEqual(typeof TruesealSyncClient.create, 'function')
 })

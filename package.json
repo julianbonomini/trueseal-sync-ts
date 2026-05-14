@@ -1,17 +1,17 @@
 {
-  "name": "hush-sync-ts",
+  "name": "trueseal-sync-ts",
   "version": "0.1.0",
-  "description": "Node.js / Electron SDK for hush-sync — E2EE, local-first device sync without accounts or lock-in",
+  "description": "Node.js / Electron SDK for trueseal-sync — E2EE, local-first device sync without accounts or lock-in",
   "type": "commonjs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "homepage": "https://github.com/julianbonomini/hush-sync-ts",
+  "homepage": "https://github.com/julianbonomini/trueseal-sync-ts",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/julianbonomini/hush-sync-ts.git"
+    "url": "git+https://github.com/julianbonomini/trueseal-sync-ts.git"
   },
   "keywords": [
-    "hush",
+    "trueseal",
     "sync",
     "e2ee",
     "encryption",
@@ -43,7 +43,7 @@
     "test": "node --test --test-force-exit '__tests__/**/*.mjs'"
   },
   "napi": {
-    "binaryName": "hush-sync-ts",
+    "binaryName": "trueseal-sync-ts",
     "targets": [
       "aarch64-apple-darwin",
       "x86_64-apple-darwin",

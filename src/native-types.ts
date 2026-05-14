@@ -1,5 +1,5 @@
 // Internal type declarations for the raw NAPI bindings.
-// Never re-exported — callers only see the clean HushSyncClient API.
+// Never re-exported — callers only see the clean TruesealSyncClient API.
 
 export interface NativeMember {
   id: string

@@ -43,15 +43,15 @@ export interface Member {
   name: string
 }
 
-/** Configuration passed to {@link HushSyncClient.create}. */
-export interface HushSyncConfig {
+/** Configuration passed to {@link TruesealSyncClient.create}. */
+export interface TruesealSyncConfig {
   /** Relay hostname or IP (no port). */
   relayHost: string
   /** 32-byte X25519 relay public key. */
   relayPublicKey: Buffer
   /**
    * Directory for the SQLite session state database.
-   * Defaults to `~/.hush-sync`.
+   * Defaults to `~/.trueseal-sync`.
    */
   storageDir?: string
   /**
@@ -61,24 +61,24 @@ export interface HushSyncConfig {
   namespace?: string
 }
 
-/** Error thrown by {@link HushSyncClient} operations. */
-export class HushSyncError extends Error {
+/** Error thrown by {@link TruesealSyncClient} operations. */
+export class TruesealSyncError extends Error {
   constructor(message: string) {
     super(message)
-    this.name = 'HushSyncError'
+    this.name = 'TruesealSyncError'
     // Restore prototype chain (required when extending built-ins in TS).
     Object.setPrototypeOf(this, new.target.prototype)
   }
 }
 
-// ── HushSyncClient ────────────────────────────────────────────────────────────
+// ── TruesealSyncClient ────────────────────────────────────────────────────────────
 
 /**
  * E2EE, local-first sync client for Node.js and Electron.
  *
  * @example
  * ```ts
- * const client = await HushSyncClient.create({
+ * const client = await TruesealSyncClient.create({
  *   relayHost: 'relay.example.com',
  *   relayPublicKey: Buffer.from('<base64>'),
  * })
@@ -87,7 +87,7 @@ export class HushSyncError extends Error {
  * await client.send(Buffer.from('hello'))
  * ```
  */
-export declare interface HushSyncClient {
+export declare interface TruesealSyncClient {
   /** A Sync blob was received. `senderId` is the sender's noise public key as base64url. */
   on(event: 'message', listener: (blob: Buffer, senderId: string) => void): this
   /** A new device joined the Sync Group. */
@@ -115,7 +115,7 @@ export declare interface HushSyncClient {
   off(event: 'memberRequest', listener: (requestToken: string, name: string) => void): this
 }
 
-export class HushSyncClient extends EventEmitter {
+export class TruesealSyncClient extends EventEmitter {
   private readonly _session: InstanceType<typeof native.HushSession>
   private _disposed = false
 
@@ -130,17 +130,17 @@ export class HushSyncClient extends EventEmitter {
    * Create a new client. The relay connects in the background — this never
    * rejects due to the relay being unreachable.
    */
-  static async create(config: HushSyncConfig): Promise<HushSyncClient> {
+  static async create(config: TruesealSyncConfig): Promise<TruesealSyncClient> {
     const {
       relayHost,
       relayPublicKey,
-      storageDir = join(homedir(), '.hush-sync'),
+      storageDir = join(homedir(), '.trueseal-sync'),
       namespace = 'default',
     } = config
 
     // Create a temporary emitter ref so closures below can capture `client`
     // via a late-binding wrapper.
-    let client: HushSyncClient | undefined
+    let client: TruesealSyncClient | undefined
 
     let session: InstanceType<typeof native.HushSession>
     try {
@@ -155,10 +155,10 @@ export class HushSyncClient extends EventEmitter {
         (connected: boolean) => _safeEmit(client, 'connectionChanged', connected),
       )
     } catch (err) {
-      throw new HushSyncError(String(err instanceof Error ? err.message : err))
+      throw new TruesealSyncError(String(err instanceof Error ? err.message : err))
     }
 
-    client = new HushSyncClient(session)
+    client = new TruesealSyncClient(session)
     client._wireCallbacks()
     return client
   }
@@ -187,7 +187,7 @@ export class HushSyncClient extends EventEmitter {
     try {
       this._session.removeMember(memberId)
     } catch (err) {
-      throw new HushSyncError(String(err instanceof Error ? err.message : err))
+      throw new TruesealSyncError(String(err instanceof Error ? err.message : err))
     }
   }
 
@@ -203,13 +203,13 @@ export class HushSyncClient extends EventEmitter {
 
   /**
    * Join a group as the responding device using the initiator's token.
-   * Throws {@link HushSyncError} if the token is malformed.
+   * Throws {@link TruesealSyncError} if the token is malformed.
    */
   joinGroup(token: string): void {
     try {
       this._session.joinGroup(token)
     } catch (err) {
-      throw new HushSyncError(String(err instanceof Error ? err.message : err))
+      throw new TruesealSyncError(String(err instanceof Error ? err.message : err))
     }
   }
 
@@ -234,7 +234,7 @@ export class HushSyncClient extends EventEmitter {
     try {
       return this._session.acceptMember(requestToken)
     } catch (err) {
-      throw new HushSyncError(String(err instanceof Error ? err.message : err))
+      throw new TruesealSyncError(String(err instanceof Error ? err.message : err))
     }
   }
 
@@ -243,7 +243,7 @@ export class HushSyncClient extends EventEmitter {
     try {
       this._session.cancelPairing()
     } catch (err) {
-      throw new HushSyncError(String(err instanceof Error ? err.message : err))
+      throw new TruesealSyncError(String(err instanceof Error ? err.message : err))
     }
   }
 
@@ -251,19 +251,19 @@ export class HushSyncClient extends EventEmitter {
 
   /**
    * Encrypt `blob` and fan it out to all current Sync Group members.
-   * Throws {@link HushSyncError} if this device is not yet in a group.
+   * Throws {@link TruesealSyncError} if this device is not yet in a group.
    *
    * @note The underlying Rust call is synchronous. The `async` signature is
    * intentional: it future-proofs the API for when `send` is moved off the
    * main thread, and keeps call-site ergonomics consistent with other
-   * async-style APIs in hush-sync. `await client.send(...)` works correctly
+   * async-style APIs in trueseal-sync. `await client.send(...)` works correctly
    * and never suspends the event loop.
    */
   async send(blob: Buffer): Promise<void> {
     try {
       this._session.send(blob)
     } catch (err) {
-      throw new HushSyncError(String(err instanceof Error ? err.message : err))
+      throw new TruesealSyncError(String(err instanceof Error ? err.message : err))
     }
   }
 
@@ -277,7 +277,7 @@ export class HushSyncClient extends EventEmitter {
     try {
       this._session.destroyGroup()
     } catch (err) {
-      throw new HushSyncError(String(err instanceof Error ? err.message : err))
+      throw new TruesealSyncError(String(err instanceof Error ? err.message : err))
     }
   }
 

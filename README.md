@@ -1,25 +1,25 @@
-# hush-sync-ts
+# trueseal-sync-ts
 
-Node.js / Electron SDK for [hush-sync](https://github.com/julianbonomini/hush-sync) — E2EE, local-first device sync. No accounts, no plaintext on the relay, no lock-in.
+Node.js / Electron SDK for [trueseal-sync](https://github.com/julianbonomini/trueseal-sync) — E2EE, local-first device sync. No accounts, no plaintext on the relay, no lock-in.
 
 ---
 
 ## Install
 
-> **Requires a Rust toolchain** (`rustup`) — the package compiles a native `.node` binary at install time. Pre-built binaries are planned; see [#prebuilds](https://github.com/julianbonomini/hush-sync-ts/issues).
+> **Requires a Rust toolchain** (`rustup`) — the package compiles a native `.node` binary at install time. Pre-built binaries are planned; see [#prebuilds](https://github.com/julianbonomini/trueseal-sync-ts/issues).
 
 Both repos must be siblings on disk:
 
 ```
-hush/
-  hush-sync/       ← Rust core
-  hush-sync-ts/    ← this package
+trueseal/
+  trueseal-sync/       ← Rust core
+  trueseal-sync-ts/    ← this package
 ```
 
 ```bash
-npm install git+https://github.com/julianbonomini/hush-sync-ts.git
+npm install git+https://github.com/julianbonomini/trueseal-sync-ts.git
 # or from source:
-git clone git@github.com:julianbonomini/hush-sync-ts.git && cd hush-sync-ts
+git clone git@github.com:julianbonomini/trueseal-sync-ts.git && cd trueseal-sync-ts
 npm install && npm run build
 ```
 
@@ -28,14 +28,14 @@ npm install && npm run build
 ## Quick start
 
 ```ts
-import { HushSyncClient, HushSyncError } from 'hush-sync-ts'
+import { TruesealSyncClient, TruesealSyncError } from 'trueseal-sync-ts'
 
 // ── Create ───────────────────────────────────────────────────────────────────
 // Relay connects in the background. Never throws due to relay being unreachable.
-const client = await HushSyncClient.create({
+const client = await TruesealSyncClient.create({
   relayHost: 'relay.example.com',
   relayPublicKey: Buffer.from('3f783127c25c91ac8ea02ab97edca78e5708e0c686fa0cc2e714c135c7cd095e', 'hex'),
-  storageDir: '/path/to/your-app/hush',   // scope to your app — see Storage below
+  storageDir: '/path/to/your-app/trueseal',   // scope to your app — see Storage below
   namespace: 'default',
 })
 
@@ -74,21 +74,21 @@ client.on('message', (blob, senderId) => {
 |-------|------|---------|-------|
 | `relayHost` | `string` | — | Hostname or IP, no port |
 | `relayPublicKey` | `Buffer` | — | 32-byte X25519 key — build-time constant, not user-configurable |
-| `storageDir` | `string` | `~/.hush-sync` | **Scope to your app** — see [Storage](#storage) |
+| `storageDir` | `string` | `~/.trueseal-sync` | **Scope to your app** — see [Storage](#storage) |
 | `namespace` | `string` | `"default"` | One session per namespace per `storageDir` |
 
 ### Methods
 
 | Method | Returns | Throws | Notes |
 |--------|---------|--------|-------|
-| `HushSyncClient.create(config)` | `Promise<HushSyncClient>` | `HushSyncError` | Constructor. Relay connects in background. |
+| `TruesealSyncClient.create(config)` | `Promise<TruesealSyncClient>` | `TruesealSyncError` | Constructor. Relay connects in background. |
 | `pairingToken()` | `string` | — | Stable base64url token. Stateless — generate once and cache. |
-| `joinGroup(token)` | `void` | `HushSyncError` | Device B calls this with A's token. |
-| `acceptPairingRequest(requestToken)` | `boolean` | `HushSyncError` | Device A calls this from `memberRequest` event. |
-| `cancelPairing()` | `void` | `HushSyncError` | Close acceptance window without admitting. Call after accepting (single-use). |
-| `send(blob)` | `Promise<void>` | `HushSyncError` | Encrypted broadcast to all members. Queues offline; replays on reconnect. |
-| `removeMember(id)` | `void` | `HushSyncError` | Soft removal — no key rotation. |
-| `destroyGroup()` | `void` | `HushSyncError` | Revokes all members. Session is **terminal** — create a new client after. |
+| `joinGroup(token)` | `void` | `TruesealSyncError` | Device B calls this with A's token. |
+| `acceptPairingRequest(requestToken)` | `boolean` | `TruesealSyncError` | Device A calls this from `memberRequest` event. |
+| `cancelPairing()` | `void` | `TruesealSyncError` | Close acceptance window without admitting. Call after accepting (single-use). |
+| `send(blob)` | `Promise<void>` | `TruesealSyncError` | Encrypted broadcast to all members. Queues offline; replays on reconnect. |
+| `removeMember(id)` | `void` | `TruesealSyncError` | Soft removal — no key rotation. |
+| `destroyGroup()` | `void` | `TruesealSyncError` | Revokes all members. Session is **terminal** — create a new client after. |
 | `dispose()` | `void` | — | Removes all listeners. Idempotent. See [Electron](#electron). |
 
 ### Identity (read-only)
@@ -114,7 +114,7 @@ client.on('message', (blob, senderId) => {
 
 ### Errors
 
-All errors surface as `HushSyncError extends Error`.
+All errors surface as `TruesealSyncError extends Error`.
 
 | `err.message` | Cause |
 |---------------|-------|
@@ -131,7 +131,7 @@ All errors surface as `HushSyncError extends Error`.
 These are non-obvious. Get them wrong and things fail quietly.
 
 **Storage — scope to your app.**
-Never rely on the default `~/.hush-sync`. Two apps sharing a path share a group identity. Use a path under your app's data directory and create it before passing it to `create()`.
+Never rely on the default `~/.trueseal-sync`. Two apps sharing a path share a group identity. Use a path under your app's data directory and create it before passing it to `create()`.
 
 **Startup order matters.**
 On boot, call `client.members` before attaching event listeners and seed your member list from the snapshot. If you attach listeners first, you'll miss state that's already persisted.
@@ -146,7 +146,7 @@ Depending on relay configuration, `message` may fire for blobs you sent. Check c
 The token encodes your permanent keypair — it doesn't open a timed window. UX for how long to accept requests is entirely your responsibility. Call `cancelPairing()` after accepting to enforce single-use.
 
 **`destroyGroup()` is terminal.**
-After this fires (on any device), stop all listeners, delete `storageDir`, and call `HushSyncClient.create()` with a fresh storage path to get a new identity.
+After this fires (on any device), stop all listeners, delete `storageDir`, and call `TruesealSyncClient.create()` with a fresh storage path to get a new identity.
 
 **Session is a singleton.**
 One instance per app lifecycle. Do not create multiple clients against the same `storageDir` + `namespace`.
@@ -162,7 +162,7 @@ TSFNs are `unref()`'d — they never prevent process exit. For explicit teardown
 mainWindow.on('close', () => client.dispose())
 
 // Or with TC39 'using' (TypeScript 5.2+)
-using client = await HushSyncClient.create(config)
+using client = await TruesealSyncClient.create(config)
 ```
 
 ---
@@ -178,7 +178,7 @@ npm test
 Smoke tests (full pairing flow) need a local relay:
 
 ```bash
-cd ../hush-relay && ./hush-relay -config relay.toml
+cd ../trueseal-relay && ./trueseal-relay -config relay.toml
 RELAY_PUB_KEY=<64-hex> npm test   # override key if needed
 SKIP_RELAY_TESTS=1 npm test        # skip smoke tests
 ```
@@ -187,9 +187,9 @@ SKIP_RELAY_TESTS=1 npm test        # skip smoke tests
 
 ## Further reading
 
-- [hush-sync integration guide](../hush-sync/docs/integrating-hush-sync.md) — concepts, pairing ceremony, session lifecycle, UX patterns
-- [hush ecosystem docs](https://hush.dev/docs) — architecture, relay deployment, wire protocol
-- [hush-relay](https://github.com/julianbonomini/hush-relay) — run your own relay
+- [trueseal-sync integration guide](../trueseal-sync/docs/integrating-trueseal-sync.md) — concepts, pairing ceremony, session lifecycle, UX patterns
+- [trueseal ecosystem docs](https://trueseal.dev/docs) — architecture, relay deployment, wire protocol
+- [trueseal-relay](https://github.com/julianbonomini/trueseal-relay) — run your own relay
 
 ---
 

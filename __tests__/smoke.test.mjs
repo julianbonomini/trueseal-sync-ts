@@ -1,9 +1,9 @@
-// Smoke tests — two HushSyncClient instances against a real local relay.
+// Smoke tests — two TruesealSyncClient instances against a real local relay.
 //
-// Requires: hush-relay running on localhost:7700/7701.
+// Requires: trueseal-relay running on localhost:7700/7701.
 //
 // Run the relay:
-//   cd ../hush-relay && ./hush-relay -config relay.toml
+//   cd ../trueseal-relay && ./trueseal-relay -config relay.toml
 //
 // Set RELAY_PUB_KEY env var to override the relay's 64-char hex public key.
 //
@@ -19,7 +19,7 @@ import { join } from 'node:path'
 import { mkdtempSync } from 'node:fs'
 import { createConnection } from 'node:net'
 
-import { HushSyncClient } from '../dist/index.js'
+import { TruesealSyncClient } from '../dist/index.js'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -29,7 +29,7 @@ const RELAY_PUB     = Buffer.from(RELAY_PUB_HEX, 'hex')
 const RELAY_PORT    = 7700
 const TIMEOUT_MS    = 10000
 
-const TMP = () => mkdtempSync(join(tmpdir(), 'hush-smoke-'))
+const TMP = () => mkdtempSync(join(tmpdir(), 'trueseal-smoke-'))
 
 // ── Relay availability check ──────────────────────────────────────────────────
 
@@ -59,7 +59,7 @@ function waitForEvent(emitter, event, timeoutMs = TIMEOUT_MS) {
 }
 
 async function makeClient(dir = TMP()) {
-  return HushSyncClient.create({
+  return TruesealSyncClient.create({
     relayHost: RELAY_HOST,
     relayPublicKey: RELAY_PUB,
     storageDir: dir,
@@ -106,7 +106,7 @@ async function pair(a, b) {
 const relayUp = await isRelayReachable()
 
 if (!relayUp) {
-  console.log('# SKIP: relay unreachable. Start hush-relay to run smoke tests.')
+  console.log('# SKIP: relay unreachable. Start trueseal-relay to run smoke tests.')
   console.log(`# Expected: ${RELAY_HOST}:${RELAY_PORT}  pub=${RELAY_PUB_HEX}`)
   console.log('# Override: RELAY_PUB_KEY=<hex> npm test')
   console.log('# Force skip: SKIP_RELAY_TESTS=1 npm test')

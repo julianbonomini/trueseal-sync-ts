@@ -3,10 +3,10 @@
 const { platform, arch } = process
 
 const platforms = {
-  'darwin-arm64':  'hush-sync-ts.darwin-arm64.node',
-  'darwin-x64':   'hush-sync-ts.darwin-x64.node',
-  'linux-x64':    'hush-sync-ts.linux-x64-gnu.node',
-  'win32-x64':    'hush-sync-ts.win32-x64-msvc.node',
+  'darwin-arm64':  'trueseal-sync-ts.darwin-arm64.node',
+  'darwin-x64':   'trueseal-sync-ts.darwin-x64.node',
+  'linux-x64':    'trueseal-sync-ts.linux-x64-gnu.node',
+  'win32-x64':    'trueseal-sync-ts.win32-x64-msvc.node',
 }
 
 const key = `${platform}-${arch}`

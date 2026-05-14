@@ -10,7 +10,7 @@ const require = createRequire(import.meta.url)
 const native = require('../index.js')
 
 const RELAY_PUB_32 = Buffer.alloc(32, 0x01) // dummy 32-byte key
-const TMP = () => mkdtempSync(join(tmpdir(), 'hush-test-'))
+const TMP = () => mkdtempSync(join(tmpdir(), 'trueseal-test-'))
 
 // ── Existence ─────────────────────────────────────────────────────────────────
 

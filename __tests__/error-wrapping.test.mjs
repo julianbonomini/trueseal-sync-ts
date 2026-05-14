@@ -1,8 +1,8 @@
 // Tests for P4: destroyGroup(), cancelPairing(), acceptPairingRequest() must
-// wrap native errors as HushSyncError, not let raw NAPI Error objects leak.
+// wrap native errors as TruesealSyncError, not let raw NAPI Error objects leak.
 //
 // We verify this by monkey-patching the private _session to throw, then
-// asserting the public method throws a HushSyncError.
+// asserting the public method throws a TruesealSyncError.
 
 import { ok, strictEqual } from 'node:assert'
 import { test } from 'node:test'
@@ -11,13 +11,13 @@ import { join } from 'node:path'
 import { mkdtempSync } from 'node:fs'
 
 import indexPkg from '../dist/index.js'
-const { HushSyncClient, HushSyncError } = indexPkg
+const { TruesealSyncClient, TruesealSyncError } = indexPkg
 
 const RELAY_PUB = Buffer.alloc(32, 0x01)
-const TMP = () => mkdtempSync(join(tmpdir(), 'hush-p4-test-'))
+const TMP = () => mkdtempSync(join(tmpdir(), 'trueseal-p4-test-'))
 
 async function makeClient() {
-  return HushSyncClient.create({
+  return TruesealSyncClient.create({
     relayHost: '127.0.0.1',
     relayPublicKey: RELAY_PUB,
     storageDir: TMP(),
@@ -36,7 +36,7 @@ function injectThrow(client, methodName) {
 
 // ── destroyGroup ──────────────────────────────────────────────────────────────
 
-test('destroyGroup: native throw surfaces as HushSyncError', async () => {
+test('destroyGroup: native throw surfaces as TruesealSyncError', async () => {
   const client = await makeClient()
   injectThrow(client, 'destroyGroup')
   let thrown = null
@@ -46,13 +46,13 @@ test('destroyGroup: native throw surfaces as HushSyncError', async () => {
     thrown = err
   }
   ok(thrown !== null, 'must throw')
-  ok(thrown instanceof HushSyncError, `expected HushSyncError, got ${thrown?.constructor?.name}`)
-  strictEqual(thrown.name, 'HushSyncError')
+  ok(thrown instanceof TruesealSyncError, `expected TruesealSyncError, got ${thrown?.constructor?.name}`)
+  strictEqual(thrown.name, 'TruesealSyncError')
 })
 
 // ── cancelPairing ─────────────────────────────────────────────────────────────
 
-test('cancelPairing: native throw surfaces as HushSyncError', async () => {
+test('cancelPairing: native throw surfaces as TruesealSyncError', async () => {
   const client = await makeClient()
   injectThrow(client, 'cancelPairing')
   let thrown = null
@@ -62,12 +62,12 @@ test('cancelPairing: native throw surfaces as HushSyncError', async () => {
     thrown = err
   }
   ok(thrown !== null, 'must throw')
-  ok(thrown instanceof HushSyncError, `expected HushSyncError, got ${thrown?.constructor?.name}`)
+  ok(thrown instanceof TruesealSyncError, `expected TruesealSyncError, got ${thrown?.constructor?.name}`)
 })
 
 // ── acceptPairingRequest ──────────────────────────────────────────────────────
 
-test('acceptPairingRequest: native throw surfaces as HushSyncError', async () => {
+test('acceptPairingRequest: native throw surfaces as TruesealSyncError', async () => {
   const client = await makeClient()
   injectThrow(client, 'acceptMember')
   let thrown = null
@@ -77,7 +77,7 @@ test('acceptPairingRequest: native throw surfaces as HushSyncError', async () =>
     thrown = err
   }
   ok(thrown !== null, 'must throw')
-  ok(thrown instanceof HushSyncError, `expected HushSyncError, got ${thrown?.constructor?.name}`)
+  ok(thrown instanceof TruesealSyncError, `expected TruesealSyncError, got ${thrown?.constructor?.name}`)
 })
 
 // ── Happy paths still work ────────────────────────────────────────────────────

@@ -718,7 +718,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "hush-noise"
+name = "trueseal-noise"
 version = "0.1.0"
 dependencies = [
  "rand",
@@ -729,14 +729,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "hush-sync"
+name = "trueseal-sync"
 version = "0.1.0"
 dependencies = [
  "base64",
  "chacha20poly1305",
  "ed25519-dalek",
  "hkdf",
- "hush-noise",
+ "trueseal-noise",
  "prost",
  "prost-build",
  "protox",
@@ -750,11 +750,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "hush-sync-ts"
+name = "trueseal-sync-ts"
 version = "0.1.0"
 dependencies = [
  "base64",
- "hush-sync",
+ "trueseal-sync",
  "napi",
  "napi-build",
  "napi-derive",

@@ -1,4 +1,4 @@
-// NAPI-RS glue wrapping hush_sync::ffi::HushFfiSession.
+// NAPI-RS glue wrapping trueseal_sync::ffi::TruesealFfiSession.
 //
 // All callbacks that can fire from background threads use ThreadsafeFunction so
 // they are safely marshalled back onto the JS event loop.
@@ -13,8 +13,8 @@ use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
-use hush_sync::ffi::{
-    ConnectionChangedCallback, GroupDestroyedCallback, HushFfiSession,
+use trueseal_sync::ffi::{
+    ConnectionChangedCallback, GroupDestroyedCallback, TruesealFfiSession,
     MemberJoinedCallback, MemberLeftCallback, MemberRequestCallback, MessageCallback,
     RemovedFromGroupCallback, SessionError as CoreError,
 };
@@ -95,7 +95,7 @@ impl MemberLeftCallback for OnMemberLeft {
 
 #[napi]
 pub struct HushSession {
-    inner: Arc<HushFfiSession>,
+    inner: Arc<TruesealFfiSession>,
 }
 
 #[napi]
@@ -167,7 +167,7 @@ impl HushSession {
 
         // ── Construct inner session ───────────────────────────────────────────
 
-        let inner = HushFfiSession::create(
+        let inner = TruesealFfiSession::create(
             base_dir,
             namespace,
             relay_host,
