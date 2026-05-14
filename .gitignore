@@ -37,6 +37,13 @@ bower_components
 # Compiled binary addons (https://nodejs.org/api/addons.html)
 build/Release
 
+# Rust / NAPI-RS build artefacts
+target/
+*.node
+
+# Generated NAPI-RS JS/TS bindings (rebuilt by `npm run build`)
+# index.js and index.d.ts are committed — they're the package entrypoint
+
 # Dependency directories
 node_modules/
 jspm_packages/
