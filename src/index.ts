@@ -6,6 +6,33 @@ import { join } from 'node:path'
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const native = require('../index.js') as typeof import('./native-types.js')
 
+// ── Safe emit ─────────────────────────────────────────────────────────────────
+
+/**
+ * Call `ee.emit(event, ...args)` without letting a throwing listener propagate
+ * synchronously into a NAPI ThreadsafeFunction callback (which would trigger
+ * ErrorStrategy::Fatal and abort the process).
+ *
+ * If a listener throws, the error is re-thrown on the next event-loop tick so
+ * it surfaces as an uncaught exception — stack trace + exit-code 1 — rather
+ * than SIGABRT with no context.
+ *
+ * Exported as `_safeEmit` (underscore = test-only) so the behaviour can be
+ * unit-tested without a relay.
+ */
+export function _safeEmit(
+  ee: EventEmitter | undefined,
+  event: string | symbol,
+  ...args: unknown[]
+): void {
+  if (!ee) return
+  try {
+    ee.emit(event, ...args)
+  } catch (err) {
+    process.nextTick(() => { throw err })
+  }
+}
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
 /** A remote member of the Sync Group. */
@@ -115,10 +142,10 @@ export class HushSyncClient extends EventEmitter {
         namespace,
         relayHost,
         relayPublicKey,
-        (blob: Buffer, senderId: string) => client?.emit('message', blob, senderId),
-        () => client?.emit('removedFromGroup'),
-        () => client?.emit('groupDestroyed'),
-        (connected: boolean) => client?.emit('connectionChanged', connected),
+        (blob: Buffer, senderId: string) => _safeEmit(client, 'message', blob, senderId),
+        () => _safeEmit(client, 'removedFromGroup'),
+        () => _safeEmit(client, 'groupDestroyed'),
+        (connected: boolean) => _safeEmit(client, 'connectionChanged', connected),
       )
     } catch (err) {
       throw new HushSyncError(String(err instanceof Error ? err.message : err))
@@ -225,10 +252,10 @@ export class HushSyncClient extends EventEmitter {
 
   private _wireCallbacks(): void {
     this._session.setOnMemberJoined((id: string, name: string) => {
-      this.emit('memberJoined', { id, name })
+      _safeEmit(this, 'memberJoined', { id, name })
     })
     this._session.setOnMemberLeft((id: string, name: string) => {
-      this.emit('memberLeft', { id, name })
+      _safeEmit(this, 'memberLeft', { id, name })
     })
     // on_message, on_removed_from_group, on_group_destroyed, on_connection_changed
     // are wired at construction time via the native.HushSession constructor.
