@@ -41,6 +41,9 @@ build/Release
 target/
 *.node
 
+# TypeScript compiled output (rebuilt by `npm run build:ts`)
+dist/
+
 # Generated NAPI-RS JS/TS bindings (rebuilt by `npm run build`)
 # index.js and index.d.ts are committed — they're the package entrypoint
 
