@@ -6,7 +6,9 @@ Node.js / Electron SDK for [trueseal-sync](https://github.com/julianbonomini/tru
 
 ## Install
 
-> **Requires a Rust toolchain** (`rustup`) — the package compiles a native `.node` binary at install time. Pre-built binaries are planned; see [#prebuilds](https://github.com/julianbonomini/trueseal-sync-ts/issues).
+> **Not yet published on npm** — install via git URL or build from source. Prebuilt binaries are planned; see [#prebuilds](https://github.com/julianbonomini/trueseal-sync-ts/issues).
+>
+> **Requires a Rust toolchain** (`rustup`) — the package compiles a native `.node` binary at install time.
 
 Both repos must be siblings on disk:
 
@@ -187,7 +189,7 @@ SKIP_RELAY_TESTS=1 npm test        # skip smoke tests
 
 ## Further reading
 
-- [trueseal-sync integration guide](../trueseal-sync/docs/integrating-trueseal-sync.md) — concepts, pairing ceremony, session lifecycle, UX patterns
+- [trueseal-sync integration guide](https://trueseal.dev/docs/guides/integrating-trueseal-sync) — concepts, pairing ceremony, session lifecycle, UX patterns
 - [trueseal ecosystem docs](https://trueseal.dev/docs) — architecture, relay deployment, wire protocol
 - [trueseal-relay](https://github.com/julianbonomini/trueseal-relay) — run your own relay
 
