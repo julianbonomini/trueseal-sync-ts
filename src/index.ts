@@ -83,13 +83,13 @@ export class TruesealSyncError extends Error {
  *   relayPublicKey: Buffer.from('<base64>'),
  * })
  *
- * client.on('message', (blob, senderId) => console.log('received', blob))
+ * client.on('message', (blob, senderId, messageId) => console.log('received', messageId, blob))
  * await client.send(Buffer.from('hello'))
  * ```
  */
 export declare interface TruesealSyncClient {
-  /** A Sync blob was received. `senderId` is the sender's noise public key as base64url. */
-  on(event: 'message', listener: (blob: Buffer, senderId: string) => void): this
+  /** A Sync blob was received. Persist `messageId` with app state to ignore re-delivery. */
+  on(event: 'message', listener: (blob: Buffer, senderId: string, messageId: string) => void): this
   /** A new device joined the Sync Group. */
   on(event: 'memberJoined', listener: (member: Member) => void): this
   /** A device was soft-removed from the Sync Group. */
@@ -106,7 +106,7 @@ export declare interface TruesealSyncClient {
    */
   on(event: 'memberRequest', listener: (requestToken: string, name: string) => void): this
 
-  off(event: 'message', listener: (blob: Buffer, senderId: string) => void): this
+  off(event: 'message', listener: (blob: Buffer, senderId: string, messageId: string) => void): this
   off(event: 'memberJoined', listener: (member: Member) => void): this
   off(event: 'memberLeft', listener: (member: Member) => void): this
   off(event: 'removedFromGroup', listener: () => void): this
@@ -149,7 +149,8 @@ export class TruesealSyncClient extends EventEmitter {
         namespace,
         relayHost,
         relayPublicKey,
-        (blob: Buffer, senderId: string) => _safeEmit(client, 'message', blob, senderId),
+        (blob: Buffer, senderId: string, messageId: string) =>
+          _safeEmit(client, 'message', blob, senderId, messageId),
         () => _safeEmit(client, 'removedFromGroup'),
         () => _safeEmit(client, 'groupDestroyed'),
         (connected: boolean) => _safeEmit(client, 'connectionChanged', connected),

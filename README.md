@@ -60,8 +60,8 @@ client.on('memberJoined', (member) => {
 // ── Send + receive ────────────────────────────────────────────────────────────
 await client.send(Buffer.from(JSON.stringify({ type: 'clip', content: 'hello' })))
 
-client.on('message', (blob, senderId) => {
-  // Dedup at your layer — relay may echo your own sends
+client.on('message', (blob, senderId, messageId) => {
+  // Atomically store messageId with your app data. Ignore it if already stored.
   const msg = JSON.parse(blob.toString())
 })
 ```
@@ -106,7 +106,7 @@ client.on('message', (blob, senderId) => {
 
 | Event | Payload | When |
 |-------|---------|------|
-| `message` | `(blob: Buffer, senderId: string)` | Encrypted blob received. `senderId` is base64url noise pubkey. |
+| `message` | `(blob: Buffer, senderId: string, messageId: string)` | Encrypted blob received. `messageId` is stable across re-delivery. |
 | `memberRequest` | `(requestToken: string, name: string)` | Remote device is knocking. Call `acceptPairingRequest(requestToken)` to admit. |
 | `memberJoined` | `(member: Member)` | Pairing completed or manifest sync'd a new peer. |
 | `memberLeft` | `(member: Member)` | Member was removed. |
@@ -141,8 +141,8 @@ On boot, call `client.members` before attaching event listeners and seed your me
 **Relay offline is not an error.**
 `connectionChanged(false)` is a normal transient state. Outbound sends queue in SQLite and replay automatically on reconnect. Do not surface this as a user-facing error or retry logic.
 
-**Dedup self-messages at your layer.**
-Depending on relay configuration, `message` may fire for blobs you sent. Check content against your local store before applying.
+**Make message handling idempotent.**
+Delivery is at least once, so the same message may arrive again after reconnecting. Persist `messageId` in the same transaction as your application update. If that ID already exists, ignore the duplicate. Treat the ID as opaque; never parse it or derive application meaning from it.
 
 **`pairingToken()` is stateless.**
 The token encodes your permanent keypair — it doesn't open a timed window. UX for how long to accept requests is entirely your responsibility. Call `cancelPairing()` after accepting to enforce single-use.

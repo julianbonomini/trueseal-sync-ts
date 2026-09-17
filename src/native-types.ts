@@ -12,7 +12,7 @@ export declare class HushSession {
     namespace: string,
     relayHost: string,
     relayPub: Buffer,
-    onMessage: (blob: Buffer, senderNoisePub: string) => void,
+    onMessage: (blob: Buffer, senderNoisePub: string, messageId: string) => void,
     onRemovedFromGroup: () => void,
     onGroupDestroyed: () => void,
     onConnectionChanged: ((connected: boolean) => void) | null,

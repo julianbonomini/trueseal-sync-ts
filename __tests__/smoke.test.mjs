@@ -133,9 +133,11 @@ if (!relayUp) {
     const payload    = Buffer.from('hello from A')
     await a.send(payload)
 
-    const [receivedBlob, senderId] = await msgPromise
+    const [receivedBlob, senderId, messageId] = await msgPromise
     deepStrictEqual(Buffer.from(receivedBlob), payload, 'blob bytes match')
     strictEqual(typeof senderId, 'string', 'senderId is a string')
+    strictEqual(typeof messageId, 'string', 'messageId is a string')
+    ok(messageId.startsWith('tsm1_'), 'messageId is a versioned opaque ID')
   })
 
   test('smoke: members() lists remote peer after pairing', { timeout: TIMEOUT_MS }, async () => {

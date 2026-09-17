@@ -14,9 +14,9 @@ use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFun
 use napi_derive::napi;
 
 use trueseal_sync::ffi::{
-    ConnectionChangedCallback, GroupDestroyedCallback, TruesealFfiSession,
-    MemberJoinedCallback, MemberLeftCallback, MemberRequestCallback, MessageCallback,
-    RemovedFromGroupCallback, SessionError as CoreError,
+    ConnectionChangedCallback, GroupDestroyedCallback, MemberJoinedCallback, MemberLeftCallback,
+    MemberRequestCallback, MessageCallback, RemovedFromGroupCallback, SessionError as CoreError,
+    TruesealFfiSession,
 };
 
 // ── Error mapping ─────────────────────────────────────────────────────────────
@@ -39,11 +39,13 @@ pub struct Member {
 // ── Callback wrapper structs ──────────────────────────────────────────────────
 // UniFFI callback interfaces require concrete struct impls, not plain closures.
 
-struct OnMessage(ThreadsafeFunction<(Vec<u8>, Vec<u8>), ErrorStrategy::Fatal>);
+struct OnMessage(ThreadsafeFunction<(Vec<u8>, Vec<u8>, String), ErrorStrategy::Fatal>);
 impl MessageCallback for OnMessage {
-    fn on_message(&self, blob: Vec<u8>, sender_noise_pub: Vec<u8>) {
-        self.0
-            .call((blob, sender_noise_pub), ThreadsafeFunctionCallMode::NonBlocking);
+    fn on_message(&self, blob: Vec<u8>, sender_noise_pub: Vec<u8>, message_id: String) {
+        self.0.call(
+            (blob, sender_noise_pub, message_id),
+            ThreadsafeFunctionCallMode::NonBlocking,
+        );
     }
 }
 
@@ -64,30 +66,36 @@ impl GroupDestroyedCallback for OnGroupDestroyed {
 struct OnConnectionChanged(ThreadsafeFunction<bool, ErrorStrategy::Fatal>);
 impl ConnectionChangedCallback for OnConnectionChanged {
     fn on_connection_changed(&self, connected: bool) {
-        self.0.call(connected, ThreadsafeFunctionCallMode::NonBlocking);
+        self.0
+            .call(connected, ThreadsafeFunctionCallMode::NonBlocking);
     }
 }
 
 struct OnMemberRequest(ThreadsafeFunction<(String, String), ErrorStrategy::Fatal>);
 impl MemberRequestCallback for OnMemberRequest {
     fn on_member_request(&self, token: String, name: String) {
-        self.0.call((token, name), ThreadsafeFunctionCallMode::NonBlocking);
+        self.0
+            .call((token, name), ThreadsafeFunctionCallMode::NonBlocking);
     }
 }
 
 struct OnMemberJoined(ThreadsafeFunction<(String, String), ErrorStrategy::Fatal>);
 impl MemberJoinedCallback for OnMemberJoined {
     fn on_member_joined(&self, member_id: String, member_name: String) {
-        self.0
-            .call((member_id, member_name), ThreadsafeFunctionCallMode::NonBlocking);
+        self.0.call(
+            (member_id, member_name),
+            ThreadsafeFunctionCallMode::NonBlocking,
+        );
     }
 }
 
 struct OnMemberLeft(ThreadsafeFunction<(String, String), ErrorStrategy::Fatal>);
 impl MemberLeftCallback for OnMemberLeft {
     fn on_member_left(&self, member_id: String, member_name: String) {
-        self.0
-            .call((member_id, member_name), ThreadsafeFunctionCallMode::NonBlocking);
+        self.0.call(
+            (member_id, member_name),
+            ThreadsafeFunctionCallMode::NonBlocking,
+        );
     }
 }
 
@@ -106,7 +114,7 @@ impl HushSession {
     /// - `namespace`      — scopes the DB file; one session per namespace
     /// - `relay_host`     — relay hostname or IP (no port)
     /// - `relay_pub`      — 32-byte X25519 relay public key as a Buffer
-    /// - `on_message`     — `(blob: Buffer, senderId: string) => void`
+    /// - `on_message`     — `(blob: Buffer, senderId: string, messageId: string) => void`
     /// - `on_removed_from_group` — `() => void`
     /// - `on_group_destroyed`    — `() => void`
     /// - `on_connection_changed` — `(connected: boolean) => void` (optional)
@@ -127,19 +135,20 @@ impl HushSession {
     ) -> Result<Self> {
         // ── Build thread-safe callbacks (all unref-ed) ────────────────────────
 
-        let mut tsfn_message: ThreadsafeFunction<(Vec<u8>, Vec<u8>), ErrorStrategy::Fatal> =
+        let mut tsfn_message: ThreadsafeFunction<(Vec<u8>, Vec<u8>, String), ErrorStrategy::Fatal> =
             on_message.create_threadsafe_function(0, |ctx| {
-                let (blob, sender): (Vec<u8>, Vec<u8>) = ctx.value;
+                let (blob, sender, message_id): (Vec<u8>, Vec<u8>, String) = ctx.value;
                 let sender_id = bytes_to_base64url(&sender);
                 Ok(vec![
                     ctx.env.create_buffer_with_data(blob)?.into_unknown(),
                     ctx.env.create_string(&sender_id)?.into_unknown(),
+                    ctx.env.create_string(&message_id)?.into_unknown(),
                 ])
             })?;
         tsfn_message.unref(&env)?;
 
-        let mut tsfn_removed: ThreadsafeFunction<(), ErrorStrategy::Fatal> =
-            on_removed_from_group.create_threadsafe_function(0, |ctx| {
+        let mut tsfn_removed: ThreadsafeFunction<(), ErrorStrategy::Fatal> = on_removed_from_group
+            .create_threadsafe_function(0, |ctx| {
                 let _ = ctx.value;
                 Ok(vec![] as Vec<napi::JsUnknown>)
             })?;
@@ -255,8 +264,7 @@ impl HushSession {
                 ])
             })?;
         tsfn.unref(&env)?;
-        self.inner
-            .set_on_member_left(Box::new(OnMemberLeft(tsfn)));
+        self.inner.set_on_member_left(Box::new(OnMemberLeft(tsfn)));
         Ok(())
     }
 
