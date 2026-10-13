@@ -105,19 +105,27 @@ async function pair(a, b) {
 
 const relayUp = await isRelayReachable()
 
+// TS-2: register the tests even when the relay is down, with node:test's skip
+// option, so the suite REPORTS the skips (node --test shows them as skipped
+// with this reason) instead of silently passing with fewer tests than expected.
+const smokeOpts = relayUp
+  ? { timeout: TIMEOUT_MS }
+  : { timeout: TIMEOUT_MS, skip: `relay unreachable at ${RELAY_HOST}:${RELAY_PORT} — start trueseal-relay to run smoke tests (see file header)` }
+
 if (!relayUp) {
   console.log('# SKIP: relay unreachable. Start trueseal-relay to run smoke tests.')
   console.log(`# Expected: ${RELAY_HOST}:${RELAY_PORT}  pub=${RELAY_PUB_HEX}`)
   console.log('# Override: RELAY_PUB_KEY=<hex> npm test')
   console.log('# Force skip: SKIP_RELAY_TESTS=1 npm test')
-} else {
-  test('smoke: two sessions connect to relay', { timeout: TIMEOUT_MS }, async () => {
+}
+{
+  test('smoke: two sessions connect to relay', smokeOpts, async () => {
     const [a, b] = await makePair()
     ok(a, 'session A created')
     ok(b, 'session B created')
   })
 
-  test('smoke: pair → memberJoined on both sides', { timeout: TIMEOUT_MS }, async () => {
+  test('smoke: pair → memberJoined on both sides', smokeOpts, async () => {
     const [a, b] = await makePair()
     await pair(a, b)
 
@@ -125,7 +133,7 @@ if (!relayUp) {
     ok(b.members.find(m => m.id === a.localNodeId), 'B sees A')
   })
 
-  test('smoke: send blob A→B', { timeout: TIMEOUT_MS }, async () => {
+  test('smoke: send blob A→B', smokeOpts, async () => {
     const [a, b] = await makePair()
     await pair(a, b)
 
@@ -140,7 +148,7 @@ if (!relayUp) {
     ok(messageId.startsWith('tsm1_'), 'messageId is a versioned opaque ID')
   })
 
-  test('smoke: members() lists remote peer after pairing', { timeout: TIMEOUT_MS }, async () => {
+  test('smoke: members() lists remote peer after pairing', smokeOpts, async () => {
     const [a, b] = await makePair()
     await pair(a, b)
 
@@ -151,7 +159,7 @@ if (!relayUp) {
     ok(a.members[0].name.length > 0, 'member name non-empty')
   })
 
-  test('smoke: removeMember fires removedFromGroup on removed device', { timeout: TIMEOUT_MS }, async () => {
+  test('smoke: removeMember fires removedFromGroup on removed device', smokeOpts, async () => {
     const [a, b] = await makePair()
     await pair(a, b)
 
@@ -160,7 +168,7 @@ if (!relayUp) {
     await removedPromise
   })
 
-  test('smoke: destroyGroup fires groupDestroyed on all members', { timeout: TIMEOUT_MS }, async () => {
+  test('smoke: destroyGroup fires groupDestroyed on all members', smokeOpts, async () => {
     const [a, b] = await makePair()
     await pair(a, b)
 
