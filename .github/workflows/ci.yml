@@ -41,10 +41,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-13, ubuntu-latest, windows-latest]
+        os: [macos-14, macos-15-intel, ubuntu-latest, windows-latest]
         node: [20, 22]
-        # macos-14 = arm64, macos-13 = x64. The fifth npm target
-        # (linux-arm64) is the cross-compile leg below.
+        # macos-14 = arm64, macos-15-intel = x64. The fifth npm target
+        # (linux-arm64) is the cross-compile leg below. macos-15-intel
+        # replaced macos-13: the macos-13 legs sat queued for over an hour
+        # across three runs without ever starting (hosted-runner capacity),
+        # while macos-15-intel schedules promptly.
     runs-on: ${{ matrix.os }}
     defaults:
       run:
