@@ -1,4 +1,4 @@
-// RED: public entrypoint — package importable as 'trueseal-sync-ts'
+// Public entrypoint — package importable as 'trueseal-sync-ts'.
 // Tests verify ESM and CJS resolution both work correctly.
 import { strictEqual, ok } from 'node:assert'
 import { test } from 'node:test'
@@ -8,21 +8,28 @@ const require = createRequire(import.meta.url)
 
 // ── CJS require ───────────────────────────────────────────────────────────────
 
-test('CJS require resolves TruesealSyncClient', () => {
+test('CJS require resolves the canonical exports', () => {
   const mod = require('../')   // resolves via package.json "main"
-  ok(mod.TruesealSyncClient, 'TruesealSyncClient exported')
-  ok(mod.TrueSealError,      'TrueSealError exported')
-  strictEqual(typeof mod.TruesealSyncClient, 'function')
-  strictEqual(typeof mod.TrueSealError,      'function')
+  ok(mod.TrueSeal,            'TrueSeal exported')
+  ok(mod.TrueSealError,       'TrueSealError exported')
+  ok(mod.RelayAddress,        'RelayAddress exported')
+  ok(mod.Subscription,        'Subscription exported')
+  ok(mod.TRUESEAL_ERROR_CODES, 'TRUESEAL_ERROR_CODES exported')
+  strictEqual(typeof mod.TrueSeal, 'function')
+  strictEqual(typeof mod.TrueSealError, 'function')
+  // The legacy name is gone outright (ADR-0028 Consequences).
+  strictEqual(mod.TruesealSyncClient, undefined)
 })
 
 // ── ESM import ────────────────────────────────────────────────────────────────
 
-test('ESM import resolves TruesealSyncClient', async () => {
+test('ESM import resolves the canonical exports', async () => {
   // Dynamic import uses package.json "exports"
   const mod = await import('../dist/index.js')
-  ok(mod.TruesealSyncClient, 'TruesealSyncClient exported via ESM')
-  ok(mod.TrueSealError,      'TrueSealError exported via ESM')
+  ok(mod.TrueSeal,      'TrueSeal exported via ESM')
+  ok(mod.TrueSealError, 'TrueSealError exported via ESM')
+  ok(mod.RelayAddress,  'RelayAddress exported via ESM')
+  strictEqual(mod.TruesealSyncClient, undefined)
 })
 
 // ── Type exports ──────────────────────────────────────────────────────────────
@@ -36,7 +43,8 @@ test('TrueSealError is an Error subclass with a canonical code', () => {
   strictEqual(e.name, 'TrueSealError')
 })
 
-test('TruesealSyncClient.create is a function', () => {
-  const { TruesealSyncClient } = require('../')
-  strictEqual(typeof TruesealSyncClient.create, 'function')
+test('TrueSeal.open and TrueSeal.parseRelayAddress are functions', () => {
+  const { TrueSeal } = require('../')
+  strictEqual(typeof TrueSeal.open, 'function')
+  strictEqual(typeof TrueSeal.parseRelayAddress, 'function')
 })

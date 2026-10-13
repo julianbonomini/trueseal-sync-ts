@@ -1,5 +1,5 @@
 // Session NAPI bindings — the internal CoreSession class (never in public types).
-import { strictEqual, ok, throws, rejects } from 'node:assert'
+import { strictEqual, ok, throws } from 'node:assert'
 import { test } from 'node:test'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,8 +9,12 @@ import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 const native = require('../index.js')
 
-const RELAY_PUB_32 = Buffer.alloc(32, 0x01) // dummy 32-byte key
-const TMP = () => mkdtempSync(join(tmpdir(), 'trueseal-test-'))
+const KEY_HEX = Buffer.alloc(32, 0x01).toString('hex')
+const ADDRESS = `trueseal://${KEY_HEX}@127.0.0.1`
+const TMP = () => mkdtempSync(join(tmpdir(), 'trueseal-native-'))
+
+const newSession = (dir, namespace = 'default') =>
+  new native.CoreSession(ADDRESS, dir, namespace, null, () => {}, () => {})
 
 // ── Existence ─────────────────────────────────────────────────────────────────
 
@@ -19,89 +23,105 @@ test('CoreSession class is exported', () => {
   strictEqual(typeof native.CoreSession, 'function', 'CoreSession is a constructor')
 })
 
+test('module-level functions are exported', () => {
+  for (const fn of ['parseRelayAddress', 'truesealInfo', 'truesealMaxPayloadBytes', 'truesealMaxGroupSize']) {
+    strictEqual(typeof native[fn], 'function', `${fn} exported`)
+  }
+})
+
 // ── Constructor validation ────────────────────────────────────────────────────
 
-test('create() throws on short relay pub key', () => {
-  throws(() => {
-    new native.CoreSession(
-      TMP(), 'default', 'relay.example.com',
-      Buffer.alloc(16),   // wrong length
-      () => {},           // onMessage
-      () => {},           // onRemovedFromGroup
-      () => {},           // onGroupDestroyed
-      null                // onConnectionChanged (optional)
-    )
-  }, /invalid/i)
+test('constructor throws typed invalidRelayAddress on a bad address', () => {
+  try {
+    new native.CoreSession('not an address', TMP(), 'default', null, () => {}, () => {})
+    ok(false, 'must throw')
+  } catch (err) {
+    strictEqual(err.code, 'invalidRelayAddress')
+  }
 })
 
-test('create() succeeds with valid params (relay unreachable is ok)', () => {
-  // relay connects in background — constructor must not throw even if relay is down
-  const session = new native.CoreSession(
-    TMP(), 'default', '127.0.0.1',
-    RELAY_PUB_32,
-    () => {},
-    () => {},
-    () => {},
-    null
-  )
+test('constructor succeeds with a valid address (relay unreachable is ok)', () => {
+  // The relay connects in the background — the constructor must not throw
+  // even if the relay is down.
+  const session = newSession(TMP())
   ok(session, 'session object returned')
+  session.close()
 })
 
-// ── Identity ──────────────────────────────────────────────────────────────────
+// ── State ─────────────────────────────────────────────────────────────────────
 
-test('localNodeId() returns a non-empty string', () => {
-  const session = new native.CoreSession(
-    TMP(), 'default', '127.0.0.1', RELAY_PUB_32,
-    () => {}, () => {}, () => {}, null
-  )
-  const id = session.localNodeId()
-  ok(typeof id === 'string' && id.length > 0, `expected non-empty string, got ${id}`)
+test('status() / me() / members() / connection() have the canonical shapes', () => {
+  const session = newSession(TMP())
+  strictEqual(session.status(), 'notJoined')
+  const me = session.me()
+  ok(typeof me.id === 'string' && me.id.length > 0)
+  ok(typeof me.name === 'string' && me.name.length > 0)
+  deepStrictEqualArray(session.members())
+  const connection = session.connection()
+  ok(typeof connection.state === 'string')
+  session.close()
 })
 
-test('localDeviceName() returns a non-empty string', () => {
-  const session = new native.CoreSession(
-    TMP(), 'default', '127.0.0.1', RELAY_PUB_32,
-    () => {}, () => {}, () => {}, null
-  )
-  const name = session.localDeviceName()
-  ok(typeof name === 'string' && name.length > 0, `expected non-empty string, got ${name}`)
+function deepStrictEqualArray(value) {
+  ok(Array.isArray(value), 'members() returns an array')
+  strictEqual(value.length, 0, 'no members before pairing')
+}
+
+// ── Receiving ─────────────────────────────────────────────────────────────────
+
+test('onMessage is one-shot, enforced by the CORE', () => {
+  const session = newSession(TMP())
+  session.onMessage(() => {})
+  try {
+    session.onMessage(() => {})
+    ok(false, 'second registration must throw')
+  } catch (err) {
+    strictEqual(err.code, 'messageHandlerAlreadySet')
+  }
+  session.close()
 })
 
-// ── Group state ───────────────────────────────────────────────────────────────
-
-test('members() returns empty array before pairing', () => {
-  const session = new native.CoreSession(
-    TMP(), 'default', '127.0.0.1', RELAY_PUB_32,
-    () => {}, () => {}, () => {}, null
-  )
-  const members = session.members()
-  ok(Array.isArray(members), 'members() returns array')
-  strictEqual(members.length, 0, 'no members before pairing')
+test('cancelMessageHandler drops the handler without re-enabling registration', () => {
+  const session = newSession(TMP())
+  session.onMessage(() => {})
+  session.cancelMessageHandler()
+  try {
+    session.onMessage(() => {})
+    ok(false, 'one-shot survives cancel')
+  } catch (err) {
+    strictEqual(err.code, 'messageHandlerAlreadySet')
+  }
+  session.close()
 })
 
-test('pairingToken() returns a non-empty string', () => {
-  const session = new native.CoreSession(
-    TMP(), 'default', '127.0.0.1', RELAY_PUB_32,
-    () => {}, () => {}, () => {}, null
-  )
-  const token = session.pairingToken()
+test('completeMessage with an unknown ack id is a no-op', () => {
+  const session = newSession(TMP())
+  session.onMessage(() => {})
+  session.completeMessage(999999, null)
+  session.completeMessage(999999, 'late error')
+  session.close()
+})
+
+// ── Pairing ───────────────────────────────────────────────────────────────────
+
+test('startPairing() returns a non-empty token', () => {
+  const session = newSession(TMP())
+  const token = session.startPairing()
   ok(typeof token === 'string' && token.length > 0, `expected token string, got ${token}`)
+  session.cancelPairing()
+  session.close()
 })
 
-// ── Member record shape ───────────────────────────────────────────────────────
+// ── close() ───────────────────────────────────────────────────────────────────
 
-test('Member record has id and name fields', () => {
-  // We can't easily get a real Member without pairing,
-  // so we verify the shape via localNodeId/localDeviceName symmetry instead.
-  // The full Member shape test lives in smoke tests (#5).
-  const session = new native.CoreSession(
-    TMP(), 'default', '127.0.0.1', RELAY_PUB_32,
-    () => {}, () => {}, () => {}, null
-  )
-  // pairingToken encodes our own keys — pairing against self is degenerate,
-  // so just assert the two identity fields are consistent non-empty strings.
-  const id   = session.localNodeId()
-  const name = session.localDeviceName()
-  ok(id.length > 0)
-  ok(name.length > 0)
+test('close() is idempotent; calls after close throw typed closed', () => {
+  const session = newSession(TMP())
+  session.close()
+  session.close()
+  try {
+    session.status()
+    ok(false, 'must throw')
+  } catch (err) {
+    strictEqual(err.code, 'closed')
+  }
 })
