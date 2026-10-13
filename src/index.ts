@@ -300,6 +300,20 @@ const _codeSet: ReadonlySet<string> = new Set(TRUESEAL_ERROR_CODES)
  * no catch-all mapping — a native failure without a canonical code is not a
  * TrueSealError (the mapping itself lives in Rust, as an exhaustive match).
  */
+/**
+ * Stringify a thrown value WITHOUT ever throwing. A hostile `message` getter
+ * or `toString` inside the message dispatcher's catch path would otherwise
+ * escape into the TSFN callback — where a throw is process-fatal
+ * (CalleeHandled=false, the old ErrorStrategy::Fatal). D22 re-gate note.
+ */
+function describeThrown(err: unknown): string {
+  try {
+    return err instanceof Error ? err.message : String(err)
+  } catch {
+    return '<unprintable error>'
+  }
+}
+
 function rethrowTyped(err: unknown): never {
   if (err instanceof Error) {
     const code = (err as { code?: unknown }).code
@@ -573,7 +587,7 @@ export class TrueSeal {
           try {
             result = handler({ id, from: { id: fromId, name: fromName }, body })
           } catch (err) {
-            complete(err instanceof Error ? err.message : String(err))
+            complete(describeThrown(err))
             return
           }
           const value: unknown = result
@@ -593,13 +607,13 @@ export class TrueSeal {
               then.call(
                 value,
                 () => complete(null),
-                (err: unknown) => complete(err instanceof Error ? err.message : String(err)),
+                (err: unknown) => complete(describeThrown(err)),
               )
             } else {
               complete(null)
             }
           } catch (err) {
-            complete(err instanceof Error ? err.message : String(err))
+            complete(describeThrown(err))
           }
         },
       )

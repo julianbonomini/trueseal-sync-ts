@@ -287,6 +287,13 @@ type AckResult = std::result::Result<(), String>;
 #[derive(Default)]
 struct PendingAcks {
     senders: HashMap<u64, oneshot::Sender<AckResult>>,
+    /// Set by `close()` under the same lock, before the drain. A handler
+    /// invocation that arrives AFTER the drain would otherwise insert a
+    /// completion that is never resolved and park a core drain thread
+    /// forever (the fetch_add→insert vs close()-drain race — D22 re-gate
+    /// note). The flag closes that window: insert and flag-check are one
+    /// critical section.
+    closed: bool,
 }
 
 /// THE message handler (ADR-0026): awaited — the Blob is acked only after
@@ -305,6 +312,13 @@ impl TrueSealMessageHandler for OnMessage {
         let (tx, rx) = oneshot::channel::<AckResult>();
         {
             let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+            if pending.closed {
+                // close() has run (the core's shutdown flag is already set —
+                // close() sets it before the drain). Ok(()) takes the core's
+                // graceful abandoned-delivery path: no failed attempt, no
+                // re-invocation; the relay re-delivers on the next open().
+                return Ok(());
+            }
             pending.senders.insert(ack_id, tx);
         }
         let delivery: MessageDelivery = (
@@ -668,6 +682,7 @@ impl CoreSession {
         // FAILED attempt and burn all five on a dying session. Ordering is
         // correct: inner.close() sets the shutdown flag before the drain.
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        pending.closed = true;
         for (_, tx) in pending.senders.drain() {
             let _ = tx.send(Ok(()));
         }
