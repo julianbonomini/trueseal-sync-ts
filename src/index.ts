@@ -399,7 +399,6 @@ export class TrueSeal {
   private readonly _session: InstanceType<typeof native.CoreSession>
   private readonly _events: ListenerFanOut<TrueSealEvent>
   private readonly _issues: ListenerFanOut<DeliveryIssue>
-  private _messageHandlerSet = false
 
   private constructor(
     session: InstanceType<typeof native.CoreSession>,
@@ -542,15 +541,11 @@ export class TrueSeal {
    * liveness rule); long work belongs in a queue the handler feeds.
    */
   onMessage(handler: (message: TrueSealMessage) => void | Promise<void>): Subscription {
-    if (this._messageHandlerSet) {
-      // The core enforces one-shot as well (the native onMessage throws
-      // messageHandlerAlreadySet); this guard keeps the failure synchronous
-      // and identical even if the native slot is somehow already taken.
-      throw new TrueSealError(
-        'messageHandlerAlreadySet',
-        'a message handler is already registered on this TrueSeal object',
-      )
-    }
+    // One-shot is enforced by the CORE (its check_open() runs first, so a
+    // call after close() correctly fails with `closed`, and a second
+    // registration — even after cancelMessageHandler — with
+    // `messageHandlerAlreadySet`). No TS-side latch: the core's ordering
+    // IS the canonical behavior.
     try {
       this._session.onMessage(
         (id: string, fromId: string, fromName: string, body: Buffer, ackId: number) => {
@@ -582,7 +577,6 @@ export class TrueSeal {
     } catch (err) {
       rethrowTyped(err)
     }
-    this._messageHandlerSet = true
     return new Subscription(() => this._session.cancelMessageHandler())
   }
 
@@ -777,3 +771,10 @@ export class TrueSeal {
 
   // ── Internal ──────────────────────────────────────────────────────────────
 }
+
+/**
+ * Test-only export (underscore prefix): the buffered listener fan-out, so
+ * its buffering, cancellation and throw-containment semantics can be
+ * unit-tested without a relay. Not part of the public API.
+ */
+export { ListenerFanOut as _ListenerFanOut }
