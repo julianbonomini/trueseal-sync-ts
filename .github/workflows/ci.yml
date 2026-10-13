@@ -1,0 +1,136 @@
+name: ci
+
+# TS-2 (#15): build + test matrix over the npm targets, on every PR and push to
+# main. npm targets (release spec): macOS arm64 + x64, Linux x64 + arm64
+# (glibc), Windows x64, on Node 20 and the current LTS (22).
+#
+# CORE PIN (G8): Cargo.toml builds the core through the sibling path dep
+# `trueseal-sync = { path = "../trueseal-sync" }`. In CI that path is a checkout
+# this workflow creates itself, at the exact commit recorded in core-rev.txt —
+# no ambient sibling checkout, no TRUESEAL_READ_TOKEN (both repos are public).
+#
+# The pin is currently 90c08cc (2026-09-17): the last core commit the current
+# NAPI bindings compile against. The SYNC-15 FFI reshape (canonical TrueSeal
+# API) renamed TruesealFfiSession and replaced the callback types; TS-3 (#16)
+# and SDK-1 (#9) rewrite these bindings and MUST bump core-rev.txt as part of
+# that work. TS-1 (#14) replaces the path dep with a pinned git dep; this file
+# documents the seam until then.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    # TS-4 follow-through: fail on high-severity advisories in the npm tree.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm audit --audit-level=high
+
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-13, ubuntu-latest, windows-latest]
+        node: [20, 22]
+        # macos-14 = arm64, macos-13 = x64. The fifth npm target
+        # (linux-arm64) is the cross-compile leg below.
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: trueseal-sync-ts
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: trueseal-sync-ts
+
+      - name: Read the pinned core revision
+        id: pin
+        shell: bash
+        run: echo "rev=$(tr -d '[:space:]' < trueseal-sync-ts/core-rev.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the pinned core at the sibling path
+        uses: actions/checkout@v4
+        with:
+          repository: julianbonomini/trueseal-sync
+          ref: ${{ steps.pin.outputs.rev }}
+          path: trueseal-sync
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: trueseal-sync-ts
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: trueseal-sync-ts/package-lock.json
+
+      - name: Build (napi native module + TypeScript)
+        run: npm ci && npm run build
+
+      - name: Test
+        shell: bash
+        run: npm test 2>&1 | tee test-output.txt
+
+      - name: Report skipped tests
+        if: always()
+        run: node scripts/report-skips.mjs test-output.txt
+
+  build-linux-arm64:
+    # Cross-compile leg for the fifth npm target. Build-only: an x64 runner
+    # can't execute the arm64 .node without emulation, and runtime coverage on
+    # linux-arm64 belongs to trueseal-e2e's harness (per the issue: leave
+    # relay-backed flows to e2e). This leg proves the target COMPILES on every
+    # PR, which is the failure class (linker/toolchain breakage) that would
+    # otherwise surface only at release packaging time.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: trueseal-sync-ts
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: trueseal-sync-ts
+
+      - name: Read the pinned core revision
+        id: pin
+        shell: bash
+        run: echo "rev=$(tr -d '[:space:]' < trueseal-sync-ts/core-rev.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the pinned core at the sibling path
+        uses: actions/checkout@v4
+        with:
+          repository: julianbonomini/trueseal-sync
+          ref: ${{ steps.pin.outputs.rev }}
+          path: trueseal-sync
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Install the aarch64 cross linker
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: trueseal-sync-ts/package-lock.json
+
+      - name: Cross-build the arm64 native module
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: npm ci --ignore-scripts && npx napi build --target aarch64-unknown-linux-gnu --release
