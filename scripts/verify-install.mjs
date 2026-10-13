@@ -98,8 +98,7 @@ const installedPlatform = join(consumer, 'node_modules', '@trueseal', `sync-${ho
 if (!existsSync(installedPlatform)) fail(`platform package not installed under node_modules/@trueseal/sync-${host.dir}`)
 
 // ── 5. Load via require AND import; probe the canonical surface ──────────────
-const probe = `
-  const mod = NAME === 'require' ? require('@trueseal/sync') : await import('@trueseal/sync')
+const probeBody = `
   if (typeof mod.TrueSeal !== 'function') throw new Error('TrueSeal not exported')
   if (typeof mod.TrueSealError !== 'function') throw new Error('TrueSealError not exported')
   const info = mod.TrueSeal.info
@@ -111,24 +110,30 @@ const probe = `
   if (parsed.host !== 'relay.example.com' || parsed.receivePort !== 7700 || parsed.pushPort !== 7701) {
     throw new Error('parseRelayAddress wrong: ' + JSON.stringify(parsed))
   }
-  console.log(NAME + ' load OK — info ' + JSON.stringify(info))
+  console.log(KIND + ' load OK — info ' + JSON.stringify(info))
 `
-writeFileSync(join(consumer, 'probe.cjs'), probe.replaceAll('NAME', "'require'"))
-writeFileSync(join(consumer, 'probe.mjs'), probe.replaceAll('NAME', "'import'"))
+writeFileSync(join(consumer, 'probe.cjs'), `const mod = require('@trueseal/sync')
+const KIND = 'require'
+${probeBody}`)
+writeFileSync(join(consumer, 'probe.mjs'), `const mod = await import('@trueseal/sync')
+const KIND = 'import'
+${probeBody}`)
 run(process.execPath, ['probe.cjs'], { cwd: consumer })
 run(process.execPath, ['probe.mjs'], { cwd: consumer })
 
 // ── 6. tsc type-checks a consumer snippet against the installed types ────────
 writeFileSync(join(consumer, 'consumer.ts'), `
 import { TrueSeal, TrueSealError } from '@trueseal/sync'
-import type { Member, GroupStatus, TrueSealEvent, DeliveryIssue, RelayAddress } from '@trueseal/sync'
+import type { Member, GroupStatus, TrueSealEvent, DeliveryIssue, RelayAddress, TrueSealOptions } from '@trueseal/sync'
+
+const opts: TrueSealOptions = { storageDir: '/tmp/x', namespace: 'n' }
 
 const status: GroupStatus = 'member'
 const m: Member = { id: 'x', name: 'AmberFalcon' }
 async function use() {
-  const ts = await TrueSeal.open('trueseal://' + 'ab'.repeat(32) + '@localhost', { baseDir: '/tmp/x' })
+  const ts = await TrueSeal.open('trueseal://' + 'ab'.repeat(32) + '@localhost', { storageDir: '/tmp/x' })
   const id: string = await ts.send(new Uint8Array([1]))
-  const me: Member = await ts.me()
+  const me: Member = ts.me
   ts.onEvent((e: TrueSealEvent) => { void e })
   ts.onDeliveryIssue((i: DeliveryIssue) => { void i })
   ts.close()
@@ -136,15 +141,16 @@ async function use() {
 }
 function typed(err: unknown) { if (err instanceof TrueSealError) { const code = err.code; void code } }
 const addr: RelayAddress = { host: 'h', publicKey: new Uint8Array(32), receivePort: 7700, pushPort: 7701 }
-void use; void typed; void status; void m; void addr
+void use; void typed; void status; void m; void addr; void opts
 `)
 writeFileSync(join(consumer, 'tsconfig.json'), JSON.stringify({
   compilerOptions: {
     target: 'ES2020', module: 'NodeNext', moduleResolution: 'NodeNext',
-    strict: true, noEmit: true, skipLibCheck: true, types: ['node'],
+    strict: true, noEmit: true, skipLibCheck: true,
   },
   include: ['consumer.ts'],
 }))
-run('npx', ['--yes', 'typescript@^6', 'tsc', '-p', 'tsconfig.json'], { cwd: consumer })
+// The repo's own pinned typescript (npx would try the registry).
+run(process.execPath, [join(root, 'node_modules', 'typescript', 'bin', 'tsc'), '-p', 'tsconfig.json'], { cwd: consumer })
 
 console.log('verify-install: PASS — @trueseal/sync packs, installs fresh, loads via require+import, and type-checks')

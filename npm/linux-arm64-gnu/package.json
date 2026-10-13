@@ -1,0 +1,39 @@
+{
+  "name": "@trueseal/sync-linux-arm64-gnu",
+  "version": "0.6.0",
+  "cpu": [
+    "arm64"
+  ],
+  "main": "trueseal-sync-ts.linux-arm64-gnu.node",
+  "files": [
+    "trueseal-sync-ts.linux-arm64-gnu.node"
+  ],
+  "description": "Node.js / Electron SDK for trueseal-sync — E2EE, local-first device sync without accounts or lock-in",
+  "keywords": [
+    "trueseal",
+    "sync",
+    "e2ee",
+    "encryption",
+    "noise-protocol",
+    "local-first",
+    "offline-first",
+    "napi",
+    "electron",
+    "node"
+  ],
+  "homepage": "https://github.com/julianbonomini/trueseal-sync-ts",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">= 20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/julianbonomini/trueseal-sync-ts.git"
+  },
+  "os": [
+    "linux"
+  ],
+  "libc": [
+    "glibc"
+  ]
+}

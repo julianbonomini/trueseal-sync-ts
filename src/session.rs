@@ -39,9 +39,20 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 
 use napi::bindgen_prelude::*;
-use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
-use napi::{JsObject, NapiRaw};
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
+
+// napi 3 (TS-1, #14): the ErrorStrategy generic became the `CalleeHandled`
+// const generic. Our dispatchers are infallible by construction and must
+// never throw into napi, so every TSFN is callee-handled = false (the old
+// ErrorStrategy::Fatal semantics): a JS throw aborts rather than being
+// swallowed. CallJsBackArgs (Args) is plain Rust values — napi 3 converts
+// them to JS values at call time via JsValuesTupleIntoVec.
+type FatalTsfn<T, Args> = ThreadsafeFunction<T, Unknown<'static>, Args, Status, false>;
+
+/// The JS dispatcher's argument tuple for a message delivery:
+/// `(id, fromId, fromName, body, ackId)`.
+type DeliveryArgs = FnArgs<(String, String, String, Buffer, f64)>;
 use tokio::sync::oneshot;
 
 use trueseal_sync::ffi::{
@@ -87,8 +98,16 @@ fn typed_err(env: &Env, e: CoreError) -> napi::Error {
         CoreError::ManifestVersionExhausted => "manifestVersionExhausted",
     };
 
-    let build = || -> napi::Result<JsObject> {
-        let mut obj = env.create_error(napi::Error::from_reason(e.to_string()))?;
+    // napi 3 (TS-1): create_error returns the lifetimed Object<'_>, so the
+    // old build-closure pattern (which had to NAME the return type) becomes
+    // a straight-line match. The fallback semantics are unchanged: if the VM
+    // is already too unhappy to build the propertied object, return the
+    // plain error instead.
+    let mut obj = match env.create_error(napi::Error::from_reason(e.to_string())) {
+        Ok(obj) => obj,
+        Err(err) => return err,
+    };
+    let build = (|| -> napi::Result<()> {
         obj.set_named_property("code", env.create_string(code)?)?;
         match &e {
             CoreError::NotMember { status } => {
@@ -103,18 +122,18 @@ fn typed_err(env: &Env, e: CoreError) -> napi::Error {
             }
             _ => {}
         }
-        Ok(obj)
-    };
+        Ok(())
+    })();
 
-    match build() {
-        Ok(obj) => {
+    match build {
+        Ok(()) => {
             // Throw the propertied object ourselves; the returned
             // PendingException tells napi-rs to leave it alone.
             unsafe { napi::sys::napi_throw(env.raw(), obj.raw()) };
             napi::Error::new(napi::Status::PendingException, "")
         }
-        // The VM is already unhappy if creating an Error object fails; fall
-        // back to the plain error (never reached in practice).
+        // The VM is already unhappy if setting properties fails; fall back
+        // to the plain error (never reached in practice).
         Err(err) => err,
     }
 }
@@ -274,7 +293,7 @@ struct PendingAcks {
 /// the JS handler settles (via `completeMessage`). A JS throw/rejection or a
 /// dropped completion maps to `HandlerError::Failed`.
 struct OnMessage {
-    tsfn: ThreadsafeFunction<MessageDelivery, ErrorStrategy::Fatal>,
+    tsfn: FatalTsfn<MessageDelivery, DeliveryArgs>,
     pending: Arc<Mutex<PendingAcks>>,
     next_ack: Arc<AtomicU64>,
 }
@@ -295,18 +314,21 @@ impl TrueSealMessageHandler for OnMessage {
             message.body,
             ack_id as f64,
         );
-        let call = self
-            .tsfn
-            .call_async::<Undefined>(delivery)
-            .await
-            .map_err(|e| e.to_string());
-        let result: AckResult = match call {
+        // napi 3 (TS-1): the sync NonBlocking call, not call_async —
+        // call_async's future holds a raw napi value and is !Send, which the
+        // core's handler trait forbids. The call returns Status immediately:
+        // a non-Ok status means the dispatcher could not run (session
+        // closing). The real settlement signal is the ack oneshot either way;
+        // the dispatcher is infallible by construction, so nothing is lost by
+        // not awaiting its completion.
+        let dispatched = self.tsfn.call(delivery, ThreadsafeFunctionCallMode::NonBlocking);
+        let result: AckResult = if dispatched == Status::Ok {
             // The dispatcher ran; now wait for the handler to settle.
-            Ok(_) => rx
-                .await
-                .unwrap_or_else(|_| Err("handler completion channel dropped".to_string())),
+            rx.await
+                .unwrap_or_else(|_| Err("handler completion channel dropped".to_string()))
+        } else {
             // The dispatcher itself could not run (session closing, ...).
-            Err(e) => Err(e),
+            Err(format!("tsfn dispatch failed: {dispatched:?}"))
         };
         // Whether settled or failed, the slot is spent.
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
@@ -318,7 +340,7 @@ impl TrueSealMessageHandler for OnMessage {
 /// Bridges the core's single event stream onto one JS dispatcher callback
 /// (JSON payload). The TS layer owns buffering and fan-out.
 struct EventBridge {
-    tsfn: ThreadsafeFunction<String, ErrorStrategy::Fatal>,
+    tsfn: FatalTsfn<String, String>,
 }
 
 impl TrueSealEventListener for EventBridge {
@@ -330,7 +352,7 @@ impl TrueSealEventListener for EventBridge {
 
 /// Bridges the core's delivery-issue stream onto one JS dispatcher callback.
 struct IssueBridge {
-    tsfn: ThreadsafeFunction<String, ErrorStrategy::Fatal>,
+    tsfn: FatalTsfn<String, String>,
 }
 
 impl TrueSealIssueListener for IssueBridge {
@@ -386,21 +408,23 @@ impl CoreSession {
         base_dir: String,
         namespace: Option<String>,
         max_payload_bytes: Option<u32>,
-        on_event: JsFunction,
-        on_delivery_issue: JsFunction,
+        on_event: Function<String, Unknown<'static>>,
+        on_delivery_issue: Function<String, Unknown<'static>>,
     ) -> Result<Self> {
-        let mut tsfn_event: ThreadsafeFunction<String, ErrorStrategy::Fatal> = on_event
-            .create_threadsafe_function(0, |ctx| {
-                let json: String = ctx.value;
-                Ok(vec![ctx.env.create_string(&json)?.into_unknown()])
-            })?;
+        let mut tsfn_event: FatalTsfn<String, String> = on_event
+            .build_threadsafe_function()
+            .build_callback(|ctx| Ok(ctx.value))?;
+        // unref: the TSFN must not keep the Node process alive. Deprecated
+        // upstream since 2.17 in favor of clone() — but clone() does NOT
+        // unref the event loop; napi_unref_threadsafe_function remains the
+        // only way to get this behavior in napi 3.14.
+        #[allow(deprecated)]
         tsfn_event.unref(&env)?;
 
-        let mut tsfn_issue: ThreadsafeFunction<String, ErrorStrategy::Fatal> = on_delivery_issue
-            .create_threadsafe_function(0, |ctx| {
-                let json: String = ctx.value;
-                Ok(vec![ctx.env.create_string(&json)?.into_unknown()])
-            })?;
+        let mut tsfn_issue: FatalTsfn<String, String> = on_delivery_issue
+            .build_threadsafe_function()
+            .build_callback(|ctx| Ok(ctx.value))?;
+        #[allow(deprecated)] // see tsfn_event above
         tsfn_issue.unref(&env)?;
 
         let inner = TrueSeal::open(relay_address, base_dir, namespace, max_payload_bytes)
@@ -481,18 +505,18 @@ impl CoreSession {
     /// runs the user's handler and signals settlement with
     /// `completeMessage(ackId, error?)`. The callback MUST NOT throw.
     #[napi]
-    pub fn on_message(&self, env: Env, callback: JsFunction) -> Result<()> {
-        let mut tsfn: ThreadsafeFunction<MessageDelivery, ErrorStrategy::Fatal> = callback
-            .create_threadsafe_function(0, |ctx| {
+    pub fn on_message(
+        &self,
+        env: Env,
+        callback: Function<DeliveryArgs, Unknown<'static>>,
+    ) -> Result<()> {
+        let mut tsfn: FatalTsfn<MessageDelivery, DeliveryArgs> = callback
+            .build_threadsafe_function()
+            .build_callback(|ctx| {
                 let (id, from_id, from_name, body, ack_id): MessageDelivery = ctx.value;
-                Ok(vec![
-                    ctx.env.create_string(&id)?.into_unknown(),
-                    ctx.env.create_string(&from_id)?.into_unknown(),
-                    ctx.env.create_string(&from_name)?.into_unknown(),
-                    ctx.env.create_buffer_with_data(body)?.into_unknown(),
-                    ctx.env.create_double(ack_id)?.into_unknown(),
-                ])
+                Ok(FnArgs::from((id, from_id, from_name, Buffer::from(body), ack_id)))
             })?;
+        #[allow(deprecated)] // see tsfn_event above
         tsfn.unref(&env)?;
 
         let sub = self
