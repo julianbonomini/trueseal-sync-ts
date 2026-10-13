@@ -633,11 +633,19 @@ impl CoreSession {
     #[napi]
     pub fn close(&self) {
         self.inner.close();
-        // Release any parked JS-handler completions so nothing awaits
-        // forever on a torn-down session.
+        // Release any parked JS-handler completions with Ok(()) — NOT an
+        // error. The core's attempt loop has a purpose-built graceful path
+        // for exactly this (session/mod.rs, the SYNC-15 F2 semantics): an
+        // Ok(()) resolution with the shutdown flag set abandons the
+        // delivery UNRECORDED — no failed attempt, no backoff, no
+        // re-invocation of the user's handler, no spurious handlerGaveUp;
+        // the ack never leaves the severed session and the relay
+        // re-delivers on the next open(). Draining with Err would count a
+        // FAILED attempt and burn all five on a dying session. Ordering is
+        // correct: inner.close() sets the shutdown flag before the drain.
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         for (_, tx) in pending.senders.drain() {
-            let _ = tx.send(Err("session closed".to_string()));
+            let _ = tx.send(Ok(()));
         }
     }
 }

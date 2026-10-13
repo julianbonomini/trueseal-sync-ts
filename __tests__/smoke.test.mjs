@@ -231,4 +231,105 @@ if (!relayUp) {
     a.close()
     b.close()
   })
+
+  // Regression test for the thenable-probe fix (SDK-1 review P2.1): a
+  // handler returning an object with a THROWING `then` getter must not
+  // escape the dispatcher synchronously (a throw into the TSFN callback is
+  // ErrorStrategy::Fatal → SIGABRT). It is a failed attempt: the core
+  // retries and reports handlerGaveUp — and the process lives.
+  test('smoke: a handler returning a thenable with a throwing `then` getter — failed attempts, never a crash', smokeOpts, async () => {
+    const [a, b] = await makePair()
+    await pair(a, b)
+
+    const gaveUp = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('no handlerGaveUp reported')), TIMEOUT_MS * 2)
+      b.onDeliveryIssue((issue) => {
+        if (issue.type === 'handlerGaveUp') {
+          clearTimeout(timer)
+          resolve(issue)
+        }
+      })
+    })
+    b.onMessage(() => ({
+      get then() {
+        throw new Error('evil getter')
+      },
+    }))
+
+    const messageId = a.send(Buffer.from('evil thenable'))
+    const issue = await gaveUp
+    strictEqual(issue.messageId, messageId)
+    ok(issue.error.includes('evil getter'), `the getter's error is reported, got: ${issue.error}`)
+    // The process survived and the SDK is still usable.
+    strictEqual(b.status, 'member')
+    a.close()
+    b.close()
+  })
+
+  // Regression test for the close()-drain fix (SDK-1 review P1): close()
+  // must resolve parked JS-handler completions with Ok(()), reaching the
+  // core's graceful-shutdown path (session/mod.rs, SYNC-15 F2) — NOT with
+  // an error, which would count FAILED attempts: backoff, re-invocation of
+  // the user's handler after close(), and a spurious handlerGaveUp.
+  // Relay-backed by necessity: an in-flight delivery is the only way to
+  // have a parked handler. The decisive invariant is RE-DELIVERY: with the
+  // buggy drain the blob is acked+dropped after 5 attempts and never
+  // re-appears; with the graceful path it is abandoned unrecorded and the
+  // relay re-delivers on the next open.
+  test('smoke: close() with an in-flight handler — no re-invocation, no handlerGaveUp, re-delivered on next open', smokeOpts, async () => {
+    const dirA = TMP()
+    const dirB = TMP()
+    const a = await makeClient(dirA)
+    const connA = waitForConnection(a, 'connected')
+    const b = await makeClient(dirB)
+    const connB = waitForConnection(b, 'connected')
+    await connA
+    await connB
+    await pair(a, b)
+
+    const issues = []
+    b.onDeliveryIssue((issue) => issues.push(issue))
+
+    let releaseHandler
+    const blocker = new Promise((resolve) => { releaseHandler = resolve })
+    let invocations = 0
+    const entered = new Promise((resolve) => {
+      b.onMessage(async () => {
+        invocations += 1
+        resolve()         // signal: the handler is parked on the first delivery
+        await blocker     // stay parked until the test releases it (after close)
+      })
+    })
+
+    const payload = Buffer.from('close mid-handler')
+    const messageId = a.send(payload)
+    await entered // the handler is in-flight
+
+    b.close()      // close WHILE the handler is parked
+    releaseHandler() // the parked handler settles AFTER close
+
+    // The buggy drain counted failed attempts; backoff re-invocations start
+    // at 250ms. Two seconds covers several — none may happen.
+    await new Promise((r) => setTimeout(r, 2000))
+    strictEqual(invocations, 1, 'the handler is never re-invoked after close()')
+    ok(!issues.some((i) => i.type === 'handlerGaveUp'), 'no spurious handlerGaveUp post-close')
+
+    // The delivery was abandoned UNRECORDED: the next open re-delivers it
+    // (the same store = the same identity, still a member).
+    const b2 = await TrueSeal.open(ADDRESS, { storageDir: dirB, namespace: 'smoke' })
+    const redelivered = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('no re-delivery after reopen')), TIMEOUT_MS)
+      b2.onMessage((message) => {
+        clearTimeout(timer)
+        resolve(message)
+      })
+    })
+    await waitForConnection(b2, 'connected')
+    const message = await redelivered
+    strictEqual(message.id, messageId, 'the unacked message is re-delivered with the same MessageId')
+    deepStrictEqual(Buffer.from(message.body), payload)
+
+    a.close()
+    b2.close()
+  })
 }

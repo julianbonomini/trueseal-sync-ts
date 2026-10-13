@@ -262,12 +262,17 @@ export class TrueSealError extends Error {
 }
 
 /**
- * A cancel handle returned by every `on…` registration (ADR-0028). Cancelling
+ * A cancel handle returned by every `on…` registration. Cancelling
  * an event or issue subscription stops delivery to that listener. Cancelling
  * the message-handler subscription drops the handler — but registration is
  * one-shot per object: a dropped handler CANNOT be re-registered (SYNC-15),
  * and a second {@link TrueSeal.onMessage} still fails with
  * `messageHandlerAlreadySet`.
+ *
+ * Shape note: ADR-0028 names an unsubscribe FUNCTION for TS; this
+ * `Subscription` class with `cancel()` deliberately converges with the
+ * Swift and Kotlin references instead, so the three SDKs share one shape
+ * and the G12 parity check compares like with like.
  */
 export class Subscription {
   private _cancel: (() => void) | null
@@ -515,7 +520,14 @@ export class TrueSeal {
     try {
       const info = this._session.connection()
       if (info.state === 'relayVersionUnsupported') {
-        return { state: 'relayVersionUnsupported', min: info.min ?? 0, max: info.max ?? 0 }
+        // Fail loudly on a glue bug rather than fabricate a version range.
+        if (typeof info.min !== 'number' || typeof info.max !== 'number') {
+          throw new Error(
+            `native glue returned relayVersionUnsupported without min/max ` +
+              `(got min=${String(info.min)}, max=${String(info.max)}) — a glue bug, not a relay condition`,
+          )
+        }
+        return { state: 'relayVersionUnsupported', min: info.min, max: info.max }
       }
       return { state: info.state as 'connecting' | 'connected' | 'disconnected' }
     } catch (err) {
@@ -564,15 +576,30 @@ export class TrueSeal {
             complete(err instanceof Error ? err.message : String(err))
             return
           }
-          // Thenable check rather than `instanceof Promise`: cross-realm
-          // promises (Electron main/renderer) fail instanceof.
-          if (result !== null && typeof result === 'object' && typeof (result as Promise<void>).then === 'function') {
-            ;(result as Promise<void>).then(
-              () => complete(null),
-              (err) => complete(err instanceof Error ? err.message : String(err)),
-            )
-          } else {
-            complete(null)
+          const value: unknown = result
+          // Thenable check (not instanceof Promise: cross-realm promises
+          // fail instanceof — Electron is a stated target). The probe AND
+          // the subscription sit inside the try/catch: a throwing `then`
+          // getter must reach complete(err), never escape into the TSFN
+          // callback (ErrorStrategy::Fatal → SIGABRT). Functions are
+          // probed too — a function-valued thenable must not be mistaken
+          // for a synchronous return (that would ack before the work).
+          try {
+            const then =
+              (typeof value === 'object' && value !== null) || typeof value === 'function'
+                ? (value as { then?: unknown }).then
+                : undefined
+            if (typeof then === 'function') {
+              then.call(
+                value,
+                () => complete(null),
+                (err: unknown) => complete(err instanceof Error ? err.message : String(err)),
+              )
+            } else {
+              complete(null)
+            }
+          } catch (err) {
+            complete(err instanceof Error ? err.message : String(err))
           }
         },
       )
