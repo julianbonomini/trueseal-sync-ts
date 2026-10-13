@@ -6,13 +6,20 @@ export interface NativeMember {
   name: string
 }
 
-export declare class HushSession {
+/**
+ * Internal wrapper around the core's canonical TrueSeal object.
+ *
+ * Fallible methods throw JS Error objects with a canonical `code` property
+ * (one of the 14 TrueSealError codes) and typed extras where the case
+ * carries them (`status`, `max`, `found`, `supported`) — see session.rs.
+ */
+export declare class CoreSession {
   constructor(
     baseDir: string,
     namespace: string,
     relayHost: string,
     relayPub: Buffer,
-    onMessage: (blob: Buffer, senderNoisePub: string, messageId: string) => void,
+    onMessage: (blob: Buffer, senderId: string, messageId: string) => void,
     onRemovedFromGroup: () => void,
     onGroupDestroyed: () => void,
     onConnectionChanged: ((connected: boolean) => void) | null,
@@ -20,8 +27,8 @@ export declare class HushSession {
 
   pairingToken(): string
   joinGroup(token: string): void
-  setOnMemberRequest(callback: (token: string, name: string) => void): void
-  acceptMember(token: string): boolean
+  setOnMemberRequest(callback: (requestId: string, name: string) => void): void
+  acceptMember(requestId: string): void
   setOnMemberJoined(callback: (memberId: string, memberName: string) => void): void
   setOnMemberLeft(callback: (memberId: string, memberName: string) => void): void
   cancelPairing(): void
@@ -29,6 +36,9 @@ export declare class HushSession {
   localDeviceName(): string
   members(): NativeMember[]
   removeMember(memberId: string): void
-  send(blob: Buffer): void
+  /** Returns the stable Message ID once the message is durably queued. */
+  send(blob: Buffer): string
   destroyGroup(): void
+  /** Stop the connection and handlers; keep Session State. Idempotent. */
+  close(): void
 }

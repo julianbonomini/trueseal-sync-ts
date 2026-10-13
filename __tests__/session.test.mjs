@@ -1,4 +1,4 @@
-// RED: session NAPI bindings — all tests fail until Rust glue is implemented.
+// Session NAPI bindings — the internal CoreSession class (never in public types).
 import { strictEqual, ok, throws, rejects } from 'node:assert'
 import { test } from 'node:test'
 import { tmpdir } from 'node:os'
@@ -14,16 +14,16 @@ const TMP = () => mkdtempSync(join(tmpdir(), 'trueseal-test-'))
 
 // ── Existence ─────────────────────────────────────────────────────────────────
 
-test('HushSession class is exported', () => {
-  ok(native.HushSession, 'HushSession must be exported')
-  strictEqual(typeof native.HushSession, 'function', 'HushSession is a constructor')
+test('CoreSession class is exported', () => {
+  ok(native.CoreSession, 'CoreSession must be exported')
+  strictEqual(typeof native.CoreSession, 'function', 'CoreSession is a constructor')
 })
 
 // ── Constructor validation ────────────────────────────────────────────────────
 
 test('create() throws on short relay pub key', () => {
   throws(() => {
-    new native.HushSession(
+    new native.CoreSession(
       TMP(), 'default', 'relay.example.com',
       Buffer.alloc(16),   // wrong length
       () => {},           // onMessage
@@ -36,7 +36,7 @@ test('create() throws on short relay pub key', () => {
 
 test('create() succeeds with valid params (relay unreachable is ok)', () => {
   // relay connects in background — constructor must not throw even if relay is down
-  const session = new native.HushSession(
+  const session = new native.CoreSession(
     TMP(), 'default', '127.0.0.1',
     RELAY_PUB_32,
     () => {},
@@ -50,7 +50,7 @@ test('create() succeeds with valid params (relay unreachable is ok)', () => {
 // ── Identity ──────────────────────────────────────────────────────────────────
 
 test('localNodeId() returns a non-empty string', () => {
-  const session = new native.HushSession(
+  const session = new native.CoreSession(
     TMP(), 'default', '127.0.0.1', RELAY_PUB_32,
     () => {}, () => {}, () => {}, null
   )
@@ -59,7 +59,7 @@ test('localNodeId() returns a non-empty string', () => {
 })
 
 test('localDeviceName() returns a non-empty string', () => {
-  const session = new native.HushSession(
+  const session = new native.CoreSession(
     TMP(), 'default', '127.0.0.1', RELAY_PUB_32,
     () => {}, () => {}, () => {}, null
   )
@@ -70,7 +70,7 @@ test('localDeviceName() returns a non-empty string', () => {
 // ── Group state ───────────────────────────────────────────────────────────────
 
 test('members() returns empty array before pairing', () => {
-  const session = new native.HushSession(
+  const session = new native.CoreSession(
     TMP(), 'default', '127.0.0.1', RELAY_PUB_32,
     () => {}, () => {}, () => {}, null
   )
@@ -80,7 +80,7 @@ test('members() returns empty array before pairing', () => {
 })
 
 test('pairingToken() returns a non-empty string', () => {
-  const session = new native.HushSession(
+  const session = new native.CoreSession(
     TMP(), 'default', '127.0.0.1', RELAY_PUB_32,
     () => {}, () => {}, () => {}, null
   )
@@ -94,7 +94,7 @@ test('Member record has id and name fields', () => {
   // We can't easily get a real Member without pairing,
   // so we verify the shape via localNodeId/localDeviceName symmetry instead.
   // The full Member shape test lives in smoke tests (#5).
-  const session = new native.HushSession(
+  const session = new native.CoreSession(
     TMP(), 'default', '127.0.0.1', RELAY_PUB_32,
     () => {}, () => {}, () => {}, null
   )

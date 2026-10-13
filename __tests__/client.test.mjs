@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { mkdtempSync } from 'node:fs'
 
 // Will throw if src/index.ts hasn't been compiled yet → RED
-import { TruesealSyncClient, TruesealSyncError } from '../dist/index.js'
+import { TruesealSyncClient, TrueSealError } from '../dist/index.js'
 
 const RELAY_PUB = Buffer.alloc(32, 0x01)
 const TMP = () => mkdtempSync(join(tmpdir(), 'trueseal-ts-test-'))
@@ -28,7 +28,7 @@ test('TruesealSyncClient.create() returns a client instance', async () => {
   ok(client instanceof TruesealSyncClient, 'is TruesealSyncClient')
 })
 
-test('TruesealSyncClient.create() throws TruesealSyncError on bad relay key', async () => {
+test('TruesealSyncClient.create() throws typed TrueSealError on bad relay key', async () => {
   await rejects(
     () => TruesealSyncClient.create({
       relayHost: '127.0.0.1',
@@ -37,7 +37,8 @@ test('TruesealSyncClient.create() throws TruesealSyncError on bad relay key', as
       namespace: 'default',
     }),
     (err) => {
-      ok(err instanceof TruesealSyncError, 'is TruesealSyncError')
+      ok(err instanceof TrueSealError, 'is TrueSealError')
+      strictEqual(err.code, 'invalidRelayAddress')
       return true
     }
   )
@@ -85,22 +86,26 @@ test('on() accepts all typed event names', async () => {
 
 // ── send() before pairing ─────────────────────────────────────────────────────
 
-test('send() before pairing rejects with TruesealSyncError.notInGroup', async () => {
+test('send() before pairing rejects with typed notMember', async () => {
   const client = await makeClient()
   await rejects(
     () => client.send(Buffer.from('hello')),
     (err) => {
-      ok(err instanceof TruesealSyncError, `expected TruesealSyncError, got ${err}`)
+      ok(err instanceof TrueSealError, `expected TrueSealError, got ${err}`)
+      strictEqual(err.code, 'notMember')
+      strictEqual(err.status, 'notJoined')
       return true
     }
   )
 })
 
-// ── TruesealSyncError ─────────────────────────────────────────────────────────────
+// ── TrueSealError ─────────────────────────────────────────────────────────────────
 
-test('TruesealSyncError is an Error subclass', () => {
-  const e = new TruesealSyncError('test message')
+test('TrueSealError is an Error subclass with a canonical code', () => {
+  const e = new TrueSealError('notMember', 'test message', { status: 'member' })
   ok(e instanceof Error)
-  ok(e instanceof TruesealSyncError)
+  ok(e instanceof TrueSealError)
   strictEqual(e.message, 'test message')
+  strictEqual(e.code, 'notMember')
+  strictEqual(e.status, 'member')
 })
