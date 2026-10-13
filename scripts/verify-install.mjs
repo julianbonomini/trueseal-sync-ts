@@ -30,11 +30,11 @@ function fail(msg) {
   process.exit(1)
 }
 
-// Windows can't spawn npm (a .cmd shim) without a shell; run the whole
-// command line through the shell there, with every argument quoted.
+// Windows can't spawn npm (a .cmd shim) directly; cmd.exe /c resolves it
+// via PATHEXT, and Node quotes the argument array correctly for cmd.
 function run(cmd, args, opts = {}) {
   const r = process.platform === 'win32'
-    ? spawnSync([cmd, ...args].map((a) => `"${a}"`).join(' '), { shell: true, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', ...opts })
+    ? spawnSync('cmd.exe', ['/d', '/c', cmd, ...args], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', ...opts })
     : spawnSync(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', ...opts })
   if (r.status !== 0 || r.error) {
     console.error(r.stdout)
