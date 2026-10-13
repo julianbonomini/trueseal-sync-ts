@@ -1,43 +1,56 @@
 // NAPI-RS glue wrapping the canonical core FFI: trueseal_sync::ffi::TrueSeal.
 //
-// TS-3 (#16): the binding targets the post-SYNC-15 FFI, whose `TrueSealError`
-// is a typed 14-variant enum. Every fallible native call maps that enum to a
-// thrown JS Error carrying:
-//   - `code`    — the canonical camelCase code, character-for-character from
-//                 trueseal-sync docs/shared-facts.json (the G12 parity source)
-//   - `message` — the human message
-//   - typed extras as real own properties where the canonical case carries
-//     them: `status` (notMember), `max` (groupFull, payloadTooLarge),
-//     `found`/`supported` (storeTooNew)
+// SDK-1 (#9): the binding exposes the canonical TrueSeal shape one-to-one —
+// the SDK adds syntax, not behaviour (ADR-0028).
 //
-// The mapping is an exhaustive Rust `match` with NO wildcard arm: if the core
-// ever grows a 15th error variant, THIS CRATE FAILS TO COMPILE. That is the
+// Errors: every fallible native call maps the core's typed 14-variant
+// `TrueSealError` to a thrown JS Error carrying `code` (canonical camelCase,
+// character-for-character from trueseal-sync docs/shared-facts.json — the
+// G12 parity source) plus typed extras as real own properties where the
+// case carries them (`status`, `max`, `found`, `supported`). The mapping is
+// an exhaustive Rust `match` with NO wildcard arm: if the core ever grows a
+// 15th error variant, THIS CRATE FAILS TO COMPILE. That is the
 // exhaustiveness guard — there is no stringly-typed fallback anywhere.
 //
-// Throw mechanics: napi-rs 2 has no Env-injected typed-error return path, so
-// `typed_err` builds the propertied Error object with the Env, throws it with
-// a raw `napi_throw`, and returns a `Status::PendingException` error — napi-rs
-// sees that status and leaves our pending exception untouched (its own
-// throw_into early-returns for PendingException).
+// Events and delivery issues: the core's single streams are bridged to JS
+// as JSON strings (small payloads; building nested JS objects from a
+// background thread is needlessly fragile). The TS layer parses, buffers
+// until the first listener, and fans out. The JSON field names ARE the
+// public TS event shapes — keep them canonical.
 //
-// All callbacks that fire from background threads use ThreadsafeFunction, and
-// every TSFN is `unref()`-ed so it does not keep the Node.js process alive.
-// The message handler is AWAITED (ADR-0026): the DeliverAck leaves the device
-// only after the JS callback returns.
+// The message handler (ADR-0026/0028): one-shot, registered by the
+// `onMessage` METHOD so the CORE enforces `messageHandlerAlreadySet`
+// (exactly like Swift and Kotlin). It is awaited: the DeliverAck leaves the
+// device only after the JS handler settles. napi-rs 2 ThreadsafeFunction
+// does not await a returned Promise, so the bridge passes an ack id with
+// every delivery and the TS layer calls `completeMessage(ackId, error?)`
+// when the handler's promise settles; the Rust side awaits a oneshot keyed
+// by that id. A JS throw or rejection maps to `HandlerError::Failed` — the
+// core's 5-attempt policy, then `handlerGaveUp`.
+//
+// All callbacks that fire from background threads use ThreadsafeFunction,
+// and every TSFN is `unref()`-ed so it does not keep the Node.js process
+// alive. TSFN callbacks must NEVER throw into napi (ErrorStrategy::Fatal
+// would abort the process): the TS dispatchers are infallible by
+// construction.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi::{JsObject, NapiRaw};
 use napi_derive::napi;
+use tokio::sync::oneshot;
 
 use trueseal_sync::ffi::{
-    ConnectionState, GroupStatus, HandlerError, StatusReason, Subscription, TrueSeal,
-    TrueSealError as CoreError, TrueSealEvent, TrueSealEventListener, TrueSealMessage,
-    TrueSealMessageHandler,
+    AdmissionDropReason, ConnectionState, DeliveryIssue, GroupStatus, HandlerError,
+    SendFailedReason, StatusReason, Subscription, TrueSeal, TrueSealError as CoreError,
+    TrueSealEvent, TrueSealEventListener, TrueSealIssueListener, TrueSealMessage,
+    TrueSealMessageHandler, UnreadableReason,
 };
+use trueseal_sync::relay_address::RelayAddress as CoreRelayAddress;
 
 // ── Typed error mapping ───────────────────────────────────────────────────────
 
@@ -106,9 +119,105 @@ fn typed_err(env: &Env, e: CoreError) -> napi::Error {
     }
 }
 
+// ── Canonical code helpers (event/issue JSON) ─────────────────────────────────
+
+fn status_reason_code(reason: StatusReason) -> &'static str {
+    match reason {
+        StatusReason::Created => "created",
+        StatusReason::Joined => "joined",
+        StatusReason::Left => "left",
+        StatusReason::Removed => "removed",
+        StatusReason::Destroyed => "destroyed",
+        StatusReason::StoreReset => "storeReset",
+    }
+}
+
+fn connection_json(connection: &ConnectionState) -> serde_json::Value {
+    match connection {
+        ConnectionState::Connecting => serde_json::json!({ "state": "connecting" }),
+        ConnectionState::Connected => serde_json::json!({ "state": "connected" }),
+        ConnectionState::Disconnected => serde_json::json!({ "state": "disconnected" }),
+        ConnectionState::RelayVersionUnsupported { min, max } => serde_json::json!({
+            "state": "relayVersionUnsupported",
+            "min": min,
+            "max": max,
+        }),
+    }
+}
+
+/// Serialize a canonical event to the JSON shape the TS layer parses.
+/// The field names ARE the public TS event union — keep them canonical.
+fn event_json(event: &TrueSealEvent) -> String {
+    let value = match event {
+        TrueSealEvent::StatusChanged { status, reason } => serde_json::json!({
+            "type": "statusChanged",
+            "status": group_status_code(*status),
+            "reason": status_reason_code(*reason),
+        }),
+        TrueSealEvent::MembersChanged { members } => serde_json::json!({
+            "type": "membersChanged",
+            "members": members
+                .iter()
+                .map(|m| serde_json::json!({ "id": m.id, "name": m.name }))
+                .collect::<Vec<_>>(),
+        }),
+        TrueSealEvent::JoinRequest { request } => serde_json::json!({
+            "type": "joinRequest",
+            "request": { "id": request.id, "name": request.name },
+        }),
+        TrueSealEvent::ConnectionChanged { connection } => serde_json::json!({
+            "type": "connectionChanged",
+            "connection": connection_json(connection),
+        }),
+        TrueSealEvent::AdmissionDropped { name, reason } => serde_json::json!({
+            "type": "admissionDropped",
+            "name": name,
+            "reason": match reason {
+                AdmissionDropReason::GroupFull => "groupFull",
+            },
+        }),
+    };
+    value.to_string()
+}
+
+/// Serialize a canonical delivery issue to the JSON shape the TS layer parses.
+fn issue_json(issue: &DeliveryIssue) -> String {
+    let value = match issue {
+        DeliveryIssue::Unreadable { reason } => serde_json::json!({
+            "type": "unreadable",
+            "reason": match reason {
+                UnreadableReason::Malformed => "malformed",
+                UnreadableReason::SenderOutdated => "senderOutdated",
+                UnreadableReason::Expired => "expired",
+                UnreadableReason::DroppedWhileHeld => "droppedWhileHeld",
+            },
+        }),
+        DeliveryIssue::Unauthorized => serde_json::json!({ "type": "unauthorized" }),
+        DeliveryIssue::HeldForUpgrade { version } => serde_json::json!({
+            "type": "heldForUpgrade",
+            "version": version,
+        }),
+        DeliveryIssue::HandlerGaveUp { message_id, error } => serde_json::json!({
+            "type": "handlerGaveUp",
+            "messageId": message_id,
+            "error": error,
+        }),
+        DeliveryIssue::SendFailed { message_id, reason } => serde_json::json!({
+            "type": "sendFailed",
+            "messageId": message_id,
+            "reason": match reason {
+                SendFailedReason::TooLarge => "tooLarge",
+                SendFailedReason::Malformed => "malformed",
+                SendFailedReason::Expired => "expired",
+            },
+        }),
+    };
+    value.to_string()
+}
+
 // ── Member record ─────────────────────────────────────────────────────────────
 
-/// A remote group member.
+/// A group member (the local device for `me()`, remote devices for `members()`).
 #[napi(object)]
 pub struct Member {
     /// Stable opaque identifier derived from the member's signing public key.
@@ -117,125 +226,117 @@ pub struct Member {
     pub name: String,
 }
 
-// ── Callback bridge structs ───────────────────────────────────────────────────
-// UniFFI callback interfaces require concrete struct impls, not plain closures.
+/// The connection state for the `connection` getter: a plain state string,
+/// plus `min`/`max` when the state is `relayVersionUnsupported`.
+#[napi(object)]
+pub struct ConnectionInfo {
+    /// `connecting | connected | disconnected | relayVersionUnsupported`.
+    pub state: String,
+    pub min: Option<u32>,
+    pub max: Option<u32>,
+}
 
-/// THE message handler (ADR-0026): awaited — the Blob is acked only after the
-/// JS callback returns. A JS throw maps to `HandlerError::Failed` (the core
-/// retries per its 5-attempt policy, then raises `handlerGaveUp`).
-struct OnMessage(ThreadsafeFunction<(Vec<u8>, String, String), ErrorStrategy::Fatal>);
+/// The parsed typed Relay Address (the return of `parseRelayAddress`).
+#[napi(object)]
+pub struct ParsedAddress {
+    pub host: String,
+    /// The relay's 32-byte X25519 public key.
+    pub public_key: Buffer,
+    pub receive_port: u32,
+    pub push_port: u32,
+}
+
+/// The version triple (ADR-0022 Reporting).
+#[napi(object)]
+pub struct Info {
+    pub sdk_version: String,
+    pub transport_version: u32,
+    pub end_to_end_version: u32,
+}
+
+// ── Callback bridges ──────────────────────────────────────────────────────────
+
+/// Delivery handed to JS: the canonical Message fields plus the ack id the
+/// TS layer returns via `completeMessage` when the handler settles.
+type MessageDelivery = (String, String, String, Vec<u8>, f64); // id, fromId, fromName, body, ackId
+
+/// Pending JS handler completions, keyed by ack id.
+/// (`std::result::Result` spelled out: napi's `Result<T, S>` alias shadows
+/// the std two-generic form in this module.)
+type AckResult = std::result::Result<(), String>;
+
+#[derive(Default)]
+struct PendingAcks {
+    senders: HashMap<u64, oneshot::Sender<AckResult>>,
+}
+
+/// THE message handler (ADR-0026): awaited — the Blob is acked only after
+/// the JS handler settles (via `completeMessage`). A JS throw/rejection or a
+/// dropped completion maps to `HandlerError::Failed`.
+struct OnMessage {
+    tsfn: ThreadsafeFunction<MessageDelivery, ErrorStrategy::Fatal>,
+    pending: Arc<Mutex<PendingAcks>>,
+    next_ack: Arc<AtomicU64>,
+}
 
 #[async_trait::async_trait]
 impl TrueSealMessageHandler for OnMessage {
     async fn on_message(&self, message: TrueSealMessage) -> std::result::Result<(), HandlerError> {
-        let args = (message.body, message.from.id, message.id);
-        self.0
-            .call_async::<Undefined>(args)
+        let ack_id = self.next_ack.fetch_add(1, AtomicOrdering::Relaxed);
+        let (tx, rx) = oneshot::channel::<AckResult>();
+        {
+            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+            pending.senders.insert(ack_id, tx);
+        }
+        let delivery: MessageDelivery = (
+            message.id,
+            message.from.id,
+            message.from.name,
+            message.body,
+            ack_id as f64,
+        );
+        let call = self
+            .tsfn
+            .call_async::<Undefined>(delivery)
             .await
-            .map(|_| ())
-            .map_err(|e| HandlerError::Failed {
-                msg: e.to_string(),
-            })
+            .map_err(|e| e.to_string());
+        let result: AckResult = match call {
+            // The dispatcher ran; now wait for the handler to settle.
+            Ok(_) => rx
+                .await
+                .unwrap_or_else(|_| Err("handler completion channel dropped".to_string())),
+            // The dispatcher itself could not run (session closing, ...).
+            Err(e) => Err(e),
+        };
+        // Whether settled or failed, the slot is spent.
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        pending.senders.remove(&ack_id);
+        result.map_err(|msg| HandlerError::Failed { msg })
     }
 }
 
-/// TSFN slots the public setters fill AFTER construction. The single core
-/// event listener reads them; events arriving before a slot is filled are
-/// dropped (matching the pre-TS-3 semantics where no setter meant no event —
-/// SDK-1 (TS) replaces this with the canonical buffered onEvent stream).
-#[derive(Default)]
-struct EventSlots {
-    member_request: Option<ThreadsafeFunction<(String, String), ErrorStrategy::Fatal>>,
-    member_joined: Option<ThreadsafeFunction<(String, String), ErrorStrategy::Fatal>>,
-    member_left: Option<ThreadsafeFunction<(String, String), ErrorStrategy::Fatal>>,
-}
-
-/// Bridges the canonical `TrueSealEvent` stream onto the legacy per-event
-/// callbacks this binding's public API still exposes. SDK-1 (TS) reshapes the
-/// public API to `onEvent` and deletes this bridge.
+/// Bridges the core's single event stream onto one JS dispatcher callback
+/// (JSON payload). The TS layer owns buffering and fan-out.
 struct EventBridge {
-    on_removed: ThreadsafeFunction<(), ErrorStrategy::Fatal>,
-    on_destroyed: ThreadsafeFunction<(), ErrorStrategy::Fatal>,
-    on_conn: Option<ThreadsafeFunction<bool, ErrorStrategy::Fatal>>,
-    slots: Arc<Mutex<EventSlots>>,
-    /// Last-seen member list (id → name) for synthesizing joined/left deltas
-    /// from the canonical whole-list `MembersChanged` event (ADR-0027's
-    /// flicker note applies: rapid concurrent changes may coalesce).
-    member_names: Mutex<HashMap<String, String>>,
+    tsfn: ThreadsafeFunction<String, ErrorStrategy::Fatal>,
 }
 
 impl TrueSealEventListener for EventBridge {
     fn on_event(&self, event: TrueSealEvent) {
-        match event {
-            TrueSealEvent::StatusChanged {
-                status: GroupStatus::NotJoined,
-                reason,
-            } => match reason {
-                StatusReason::Removed => {
-                    self.on_removed
-                        .call((), ThreadsafeFunctionCallMode::NonBlocking);
-                }
-                StatusReason::Destroyed => {
-                    self.on_destroyed
-                        .call((), ThreadsafeFunctionCallMode::NonBlocking);
-                }
-                // Left / StoreReset / Created / Joined have no legacy event;
-                // SDK-1 (TS) exposes the canonical statusChanged stream.
-                _ => {}
-            },
-            // Transitions TO a status (joined, leaving, destroying, ...) are
-            // visible through members()/status getters; no legacy event.
-            TrueSealEvent::StatusChanged { .. } => {}
-            TrueSealEvent::ConnectionChanged { connection } => {
-                if let Some(tsfn) = &self.on_conn {
-                    let connected = matches!(connection, ConnectionState::Connected);
-                    tsfn.call(connected, ThreadsafeFunctionCallMode::NonBlocking);
-                }
-            }
-            TrueSealEvent::JoinRequest { request } => {
-                let tsfn = self
-                    .slots
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .member_request
-                    .clone();
-                if let Some(tsfn) = tsfn {
-                    tsfn.call((request.id, request.name), ThreadsafeFunctionCallMode::NonBlocking);
-                }
-            }
-            TrueSealEvent::MembersChanged { members } => {
-                let (joined, left) = {
-                    let mut old = self.member_names.lock().unwrap_or_else(|e| e.into_inner());
-                    let new_ids: std::collections::HashSet<&str> =
-                        members.iter().map(|m| m.id.as_str()).collect();
-                    let joined: Vec<(String, String)> = members
-                        .iter()
-                        .filter(|m| !old.contains_key(&m.id))
-                        .map(|m| (m.id.clone(), m.name.clone()))
-                        .collect();
-                    let left: Vec<(String, String)> = old
-                        .iter()
-                        .filter(|(id, _)| !new_ids.contains(id.as_str()))
-                        .map(|(id, name)| (id.clone(), name.clone()))
-                        .collect();
-                    *old = members.iter().map(|m| (m.id.clone(), m.name.clone())).collect();
-                    (joined, left)
-                };
-                let slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
-                for (id, name) in joined {
-                    if let Some(tsfn) = &slots.member_joined {
-                        tsfn.call((id, name), ThreadsafeFunctionCallMode::NonBlocking);
-                    }
-                }
-                for (id, name) in left {
-                    if let Some(tsfn) = &slots.member_left {
-                        tsfn.call((id, name), ThreadsafeFunctionCallMode::NonBlocking);
-                    }
-                }
-            }
-            // No legacy event exists; SDK-1 (TS) exposes it on onEvent.
-            TrueSealEvent::AdmissionDropped { .. } => {}
-        }
+        self.tsfn
+            .call(event_json(&event), ThreadsafeFunctionCallMode::NonBlocking);
+    }
+}
+
+/// Bridges the core's delivery-issue stream onto one JS dispatcher callback.
+struct IssueBridge {
+    tsfn: ThreadsafeFunction<String, ErrorStrategy::Fatal>,
+}
+
+impl TrueSealIssueListener for IssueBridge {
+    fn on_delivery_issue(&self, issue: DeliveryIssue) {
+        self.tsfn
+            .call(issue_json(&issue), ThreadsafeFunctionCallMode::NonBlocking);
     }
 }
 
@@ -244,212 +345,224 @@ impl TrueSealEventListener for EventBridge {
 /// Internal NAPI wrapper around the core's canonical `TrueSeal` object.
 ///
 /// This class is deliberately NOT part of the package's public types
-/// (src/native-types.ts is internal; the public API is TruesealSyncClient).
-/// The pre-TS-3 name `HushSession` is gone — "Hush" is an example app, not
-/// the SDK.
+/// (src/native-types.ts is internal; the public API is `TrueSeal` in
+/// src/index.ts).
 #[napi]
 pub struct CoreSession {
     inner: Arc<TrueSeal>,
-    slots: Arc<Mutex<EventSlots>>,
-    // Subscriptions must outlive the session: dropping one unregisters the
-    // handler/listener.
-    _handler_sub: Arc<Subscription>,
+    pending: Arc<Mutex<PendingAcks>>,
+    next_ack: Arc<AtomicU64>,
+    // Subscriptions must outlive the registration: dropping one unregisters.
+    // The message handler's subscription is droppable via
+    // `cancelMessageHandler` (the TS Subscription.cancel()); one-shot is
+    // still enforced — a dropped handler cannot be re-registered.
+    handler_sub: Mutex<Option<Arc<Subscription>>>,
     _event_sub: Arc<Subscription>,
+    _issue_sub: Arc<Subscription>,
 }
 
 #[napi]
 impl CoreSession {
-    /// Create a new session.
+    /// Open a session on the canonical core object (ADR-0028).
     ///
-    /// - `base_dir`       — directory for the SQLite database
-    /// - `namespace`      — scopes the DB file; one session per namespace
-    /// - `relay_host`     — relay hostname or IP (no port; the Relay Address
-    ///                      string form is SDK-1 (TS) scope)
-    /// - `relay_pub`      — 32-byte X25519 relay public key as a Buffer
-    /// - `on_message`     — `(blob: Buffer, senderId: string, messageId: string) => void`;
-    ///                      AWAITED per ADR-0026 — see TrueSealMessageHandler
-    /// - `on_removed_from_group` — `() => void`
-    /// - `on_group_destroyed`    — `() => void`
-    /// - `on_connection_changed` — `(connected: boolean) => void` (optional)
+    /// - `relay_address`     — the Relay Address string
+    ///   (`trueseal://<relay public key hex>@host[:receivePort][?push=pushPort]`)
+    /// - `base_dir`          — directory for the SQLite database
+    /// - `namespace`         — scopes the DB file; one session per namespace
+    /// - `max_payload_bytes` — optional creation-time payload-limit override
+    ///   (can only lower the limit; ADR-0025)
+    /// - `on_event`          — `(eventJson: string) => void`; MUST NOT throw
+    /// - `on_delivery_issue` — `(issueJson: string) => void`; MUST NOT throw
     ///
     /// The relay connects in the background — the constructor never throws
     /// due to the relay being unreachable. It DOES throw typed errors
     /// (`invalidRelayAddress`, `invalidNamespace`, `storage`, `storeTooNew`).
+    /// The message handler is registered separately via `onMessage`
+    /// (registering it is what starts receiving — ADR-0026).
     #[napi(constructor)]
     pub fn new(
         env: Env,
+        relay_address: String,
         base_dir: String,
-        namespace: String,
-        relay_host: String,
-        relay_pub: Buffer,
-        on_message: JsFunction,
-        on_removed_from_group: JsFunction,
-        on_group_destroyed: JsFunction,
-        on_connection_changed: Option<JsFunction>,
+        namespace: Option<String>,
+        max_payload_bytes: Option<u32>,
+        on_event: JsFunction,
+        on_delivery_issue: JsFunction,
     ) -> Result<Self> {
-        // ── Thread-safe callbacks (all unref-ed) ─────────────────────────────
-
-        let tsfn_message: ThreadsafeFunction<(Vec<u8>, String, String), ErrorStrategy::Fatal> =
-            on_message.create_threadsafe_function(0, |ctx| {
-                let (blob, sender_id, message_id): (Vec<u8>, String, String) = ctx.value;
-                Ok(vec![
-                    ctx.env.create_buffer_with_data(blob)?.into_unknown(),
-                    ctx.env.create_string(&sender_id)?.into_unknown(),
-                    ctx.env.create_string(&message_id)?.into_unknown(),
-                ])
-            })?;
-
-        let mut tsfn_removed: ThreadsafeFunction<(), ErrorStrategy::Fatal> = on_removed_from_group
+        let mut tsfn_event: ThreadsafeFunction<String, ErrorStrategy::Fatal> = on_event
             .create_threadsafe_function(0, |ctx| {
-                let _ = ctx.value;
-                Ok(vec![] as Vec<napi::JsUnknown>)
+                let json: String = ctx.value;
+                Ok(vec![ctx.env.create_string(&json)?.into_unknown()])
             })?;
-        tsfn_removed.unref(&env)?;
+        tsfn_event.unref(&env)?;
 
-        let mut tsfn_destroyed: ThreadsafeFunction<(), ErrorStrategy::Fatal> =
-            on_group_destroyed.create_threadsafe_function(0, |ctx| {
-                let _ = ctx.value;
-                Ok(vec![] as Vec<napi::JsUnknown>)
+        let mut tsfn_issue: ThreadsafeFunction<String, ErrorStrategy::Fatal> = on_delivery_issue
+            .create_threadsafe_function(0, |ctx| {
+                let json: String = ctx.value;
+                Ok(vec![ctx.env.create_string(&json)?.into_unknown()])
             })?;
-        tsfn_destroyed.unref(&env)?;
+        tsfn_issue.unref(&env)?;
 
-        let mut tsfn_conn: Option<ThreadsafeFunction<bool, ErrorStrategy::Fatal>> =
-            on_connection_changed
-                .map(|f| {
-                    f.create_threadsafe_function(0, |ctx| {
-                        let connected: bool = ctx.value;
-                        Ok(vec![ctx.env.get_boolean(connected)?.into_unknown()])
-                    })
-                })
-                .transpose()?;
-        if let Some(ref mut tsfn) = tsfn_conn {
-            tsfn.unref(&env)?;
-        }
-
-        // ── Open the canonical core object ────────────────────────────────────
-        //
-        // The legacy host+key config becomes a Relay Address string with the
-        // default ports (7700/7701) — the grammar trueseal-relay's `address`
-        // command prints and trueseal-sync's parser reads.
-
-        let relay = format!(
-            "trueseal://{}@{}",
-            hex::encode(relay_pub.as_ref()),
-            relay_host
-        );
-        let inner = TrueSeal::open(relay, base_dir, Some(namespace), None)
+        let inner = TrueSeal::open(relay_address, base_dir, namespace, max_payload_bytes)
             .map_err(|e| typed_err(&env, e))?;
 
-        // THE message handler (ADR-0026: one-shot, awaited).
-        let handler_sub = inner
-            .on_message(Box::new(OnMessage(tsfn_message)))
-            .map_err(|e| typed_err(&env, e))?;
-
-        // The single event listener bridging onto the legacy callbacks.
-        let slots = Arc::new(Mutex::new(EventSlots::default()));
         let event_sub = inner
-            .on_event(Box::new(EventBridge {
-                on_removed: tsfn_removed,
-                on_destroyed: tsfn_destroyed,
-                on_conn: tsfn_conn,
-                slots: slots.clone(),
-                member_names: Mutex::new(HashMap::new()),
-            }))
+            .on_event(Box::new(EventBridge { tsfn: tsfn_event }))
+            .map_err(|e| typed_err(&env, e))?;
+        let issue_sub = inner
+            .on_delivery_issue(Box::new(IssueBridge { tsfn: tsfn_issue }))
             .map_err(|e| typed_err(&env, e))?;
 
         Ok(Self {
             inner,
-            slots,
-            _handler_sub: handler_sub,
+            pending: Arc::new(Mutex::new(PendingAcks::default())),
+            next_ack: Arc::new(AtomicU64::new(0)),
+            handler_sub: Mutex::new(None),
             _event_sub: event_sub,
+            _issue_sub: issue_sub,
         })
     }
 
-    // ── Pairing ───────────────────────────────────────────────────────────────
+    // ── State getters ─────────────────────────────────────────────────────────
 
-    /// Open a Pairing Window and return the Pairing Token.
-    /// Pass the token to the peer's `joinGroup(token)`.
+    /// The group status (ADR-0028): one of the five canonical codes.
     #[napi]
-    pub fn pairing_token(&self, env: Env) -> Result<String> {
-        self.inner.start_pairing().map_err(|e| typed_err(&env, e))
+    pub fn status(&self, env: Env) -> Result<String> {
+        let status = self.inner.status().map_err(|e| typed_err(&env, e))?;
+        Ok(group_status_code(status).to_string())
     }
 
-    /// Join a group as the responding device using the initiator's token.
+    /// This device's member record (`{id, name}`).
     #[napi]
-    pub fn join_group(&self, env: Env, token: String) -> Result<()> {
-        self.inner.join(token).map_err(|e| typed_err(&env, e))
+    pub fn me(&self, env: Env) -> Result<Member> {
+        let me = self.inner.me().map_err(|e| typed_err(&env, e))?;
+        Ok(Member {
+            id: me.id,
+            name: me.name,
+        })
     }
 
-    /// Register a callback fired when a Join Request arrives inside the open
-    /// Pairing Window. `callback(requestId: string, name: string) => void`.
+    /// The connection state (ADR-0028), with `min`/`max` on
+    /// `relayVersionUnsupported`.
     #[napi]
-    pub fn set_on_member_request(&self, env: Env, callback: JsFunction) -> Result<()> {
-        let mut tsfn: ThreadsafeFunction<(String, String), ErrorStrategy::Fatal> = callback
+    pub fn connection(&self, env: Env) -> Result<ConnectionInfo> {
+        let connection = self.inner.connection().map_err(|e| typed_err(&env, e))?;
+        Ok(match connection {
+            ConnectionState::RelayVersionUnsupported { min, max } => ConnectionInfo {
+                state: "relayVersionUnsupported".to_string(),
+                min: Some(min),
+                max: Some(max),
+            },
+            ConnectionState::Connecting => ConnectionInfo {
+                state: "connecting".to_string(),
+                min: None,
+                max: None,
+            },
+            ConnectionState::Connected => ConnectionInfo {
+                state: "connected".to_string(),
+                min: None,
+                max: None,
+            },
+            ConnectionState::Disconnected => ConnectionInfo {
+                state: "disconnected".to_string(),
+                min: None,
+                max: None,
+            },
+        })
+    }
+
+    // ── Receiving ─────────────────────────────────────────────────────────────
+
+    /// Register THE message handler (ADR-0026/0028): one-shot per object,
+    /// enforced by the CORE — a second call throws typed
+    /// `messageHandlerAlreadySet`. Registering starts receiving.
+    ///
+    /// `callback(id, fromId, fromName, body, ackId) => void` — the TS layer
+    /// runs the user's handler and signals settlement with
+    /// `completeMessage(ackId, error?)`. The callback MUST NOT throw.
+    #[napi]
+    pub fn on_message(&self, env: Env, callback: JsFunction) -> Result<()> {
+        let mut tsfn: ThreadsafeFunction<MessageDelivery, ErrorStrategy::Fatal> = callback
             .create_threadsafe_function(0, |ctx| {
-                let (id, name): (String, String) = ctx.value;
+                let (id, from_id, from_name, body, ack_id): MessageDelivery = ctx.value;
                 Ok(vec![
                     ctx.env.create_string(&id)?.into_unknown(),
-                    ctx.env.create_string(&name)?.into_unknown(),
+                    ctx.env.create_string(&from_id)?.into_unknown(),
+                    ctx.env.create_string(&from_name)?.into_unknown(),
+                    ctx.env.create_buffer_with_data(body)?.into_unknown(),
+                    ctx.env.create_double(ack_id)?.into_unknown(),
                 ])
             })?;
         tsfn.unref(&env)?;
-        self.slots
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .member_request = Some(tsfn);
+
+        let sub = self
+            .inner
+            .on_message(Box::new(OnMessage {
+                tsfn,
+                pending: self.pending.clone(),
+                next_ack: self.next_ack.clone(),
+            }))
+            .map_err(|e| typed_err(&env, e))?;
+        let mut slot = self.handler_sub.lock().unwrap_or_else(|e| e.into_inner());
+        *slot = Some(sub);
         Ok(())
     }
 
-    /// Admit a pending member by the opaque `requestId` from `onMemberRequest`.
-    ///
-    /// Throws typed `pairingClosed` when the window is closed or the request
-    /// ID is unknown (ADR-0023/0028 — the pre-TS-3 `false` return is gone;
-    /// an unknown request IS an error in the canonical model).
+    /// Signal that the JS handler for `ack_id` settled. `error` non-null
+    /// marks the attempt failed (the core retries per ADR-0026). Unknown or
+    /// already-settled ids are ignored (a late completion after close()).
     #[napi]
-    pub fn accept_member(&self, env: Env, request_id: String) -> Result<()> {
+    pub fn complete_message(&self, ack_id: f64, error: Option<String>) {
+        let sender = {
+            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+            pending.senders.remove(&(ack_id as u64))
+        };
+        if let Some(tx) = sender {
+            let _ = tx.send(match error {
+                Some(msg) => Err(msg),
+                None => Ok(()),
+            });
+        }
+    }
+
+    /// Drop the message-handler registration (the TS Subscription.cancel()).
+    /// One-shot is unaffected: a dropped handler cannot be re-registered
+    /// (ADR-0028/SYNC-15) — the core still throws `messageHandlerAlreadySet`.
+    #[napi]
+    pub fn cancel_message_handler(&self) {
+        let mut slot = self.handler_sub.lock().unwrap_or_else(|e| e.into_inner());
+        *slot = None;
+    }
+
+    // ── Sending ───────────────────────────────────────────────────────────────
+
+    /// Queue `blob` for fan-out to all current group members (ADR-0026).
+    /// Returns the stable Message ID once the message is durably in the
+    /// outbox. Throws typed `payloadTooLarge{max}` / `notMember{status}`.
+    #[napi]
+    pub fn send(&self, env: Env, blob: Buffer) -> Result<String> {
         self.inner
-            .accept(request_id)
+            .send(blob.to_vec())
             .map_err(|e| typed_err(&env, e))
     }
 
-    /// Register a callback fired when a device joins the group.
-    /// `callback(memberId: string, memberName: string) => void`
+    // ── Pairing, admitting side ───────────────────────────────────────────────
+
+    /// Open a Pairing Window and return the Pairing Token.
+    /// Pass the token to the peer's `join(token)`.
     #[napi]
-    pub fn set_on_member_joined(&self, env: Env, callback: JsFunction) -> Result<()> {
-        let mut tsfn: ThreadsafeFunction<(String, String), ErrorStrategy::Fatal> = callback
-            .create_threadsafe_function(0, |ctx| {
-                let (id, name): (String, String) = ctx.value;
-                Ok(vec![
-                    ctx.env.create_string(&id)?.into_unknown(),
-                    ctx.env.create_string(&name)?.into_unknown(),
-                ])
-            })?;
-        tsfn.unref(&env)?;
-        self.slots
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .member_joined = Some(tsfn);
-        Ok(())
+    pub fn start_pairing(&self, env: Env) -> Result<String> {
+        self.inner.start_pairing().map_err(|e| typed_err(&env, e))
     }
 
-    /// Register a callback fired when a member leaves or is removed.
-    /// `callback(memberId: string, memberName: string) => void`
+    /// Admit a pending member by the opaque `requestId` from a `joinRequest`
+    /// event. Throws typed `pairingClosed` when the window is closed or the
+    /// request id is unknown, `groupFull{max}` at the cap (ADR-0023/0027/0028).
     #[napi]
-    pub fn set_on_member_left(&self, env: Env, callback: JsFunction) -> Result<()> {
-        let mut tsfn: ThreadsafeFunction<(String, String), ErrorStrategy::Fatal> = callback
-            .create_threadsafe_function(0, |ctx| {
-                let (id, name): (String, String) = ctx.value;
-                Ok(vec![
-                    ctx.env.create_string(&id)?.into_unknown(),
-                    ctx.env.create_string(&name)?.into_unknown(),
-                ])
-            })?;
-        tsfn.unref(&env)?;
-        self.slots
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .member_left = Some(tsfn);
-        Ok(())
+    pub fn accept(&self, env: Env, request_id: String) -> Result<()> {
+        self.inner
+            .accept(request_id)
+            .map_err(|e| typed_err(&env, e))
     }
 
     /// Close the Pairing Window without admitting any device.
@@ -458,22 +571,23 @@ impl CoreSession {
         self.inner.cancel_pairing().map_err(|e| typed_err(&env, e))
     }
 
-    // ── Identity ──────────────────────────────────────────────────────────────
+    // ── Pairing, joining side ─────────────────────────────────────────────────
 
-    /// Stable opaque identifier for the local device (the member id — the
-    /// same id as in `members()` on the peer's view).
+    /// Join a group as the responding device using the initiator's token.
+    /// Moves the device to `pendingJoin`; throws typed `alreadyInGroup` or
+    /// `invalidPairingToken`.
     #[napi]
-    pub fn local_node_id(&self, env: Env) -> Result<String> {
-        Ok(self.inner.me().map_err(|e| typed_err(&env, e))?.id)
+    pub fn join(&self, env: Env, token: String) -> Result<()> {
+        self.inner.join(token).map_err(|e| typed_err(&env, e))
     }
 
-    /// Auto-generated display name for the local device.
+    /// Abandon a Pending Join; the device returns to `notJoined` (ADR-0023).
     #[napi]
-    pub fn local_device_name(&self, env: Env) -> Result<String> {
-        Ok(self.inner.me().map_err(|e| typed_err(&env, e))?.name)
+    pub fn cancel_join(&self, env: Env) -> Result<()> {
+        self.inner.cancel_join().map_err(|e| typed_err(&env, e))
     }
 
-    // ── Group ─────────────────────────────────────────────────────────────────
+    // ── Membership ────────────────────────────────────────────────────────────
 
     /// List remote group members (excludes the local device).
     #[napi]
@@ -490,22 +604,17 @@ impl CoreSession {
 
     /// Remove a group member by their opaque `memberId` from `members()`.
     #[napi]
-    pub fn remove_member(&self, env: Env, member_id: String) -> Result<()> {
+    pub fn remove(&self, env: Env, member_id: String) -> Result<()> {
         self.inner
             .remove(member_id)
             .map_err(|e| typed_err(&env, e))
     }
 
-    // ── Sync ──────────────────────────────────────────────────────────────────
-
-    /// Queue `blob` for fan-out to all current group members (ADR-0026).
-    /// Returns the stable Message ID once the message is durably in the
-    /// outbox. Throws typed `payloadTooLarge{max}` / `notMember{status}`.
+    /// Leave the group: the device moves to `leaving`, and to `notJoined`
+    /// with reason `left` once the Relay has accepted the Leave (ADR-0027).
     #[napi]
-    pub fn send(&self, env: Env, blob: Buffer) -> Result<String> {
-        self.inner
-            .send(blob.to_vec())
-            .map_err(|e| typed_err(&env, e))
+    pub fn leave(&self, env: Env) -> Result<()> {
+        self.inner.leave().map_err(|e| typed_err(&env, e))
     }
 
     // ── Destroy ───────────────────────────────────────────────────────────────
@@ -523,6 +632,54 @@ impl CoreSession {
     /// Idempotent. After `close()`, every call throws typed `closed`.
     #[napi]
     pub fn close(&self) {
-        self.inner.close()
+        self.inner.close();
+        // Release any parked JS-handler completions so nothing awaits
+        // forever on a torn-down session.
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        for (_, tx) in pending.senders.drain() {
+            let _ = tx.send(Err("session closed".to_string()));
+        }
     }
+}
+
+// ── Module-level functions ────────────────────────────────────────────────────
+
+/// Parse a Relay Address string into the typed form (ADR-0028). Strict:
+/// the scheme is mandatory, the key is exactly 64 hex chars (uppercase
+/// accepted), the host never contains `@`, IPv6 hosts are bracketed, and
+/// `push=` is the only query parameter. Throws typed `invalidRelayAddress`.
+#[napi]
+pub fn parse_relay_address(env: Env, input: String) -> Result<ParsedAddress> {
+    let parsed = CoreRelayAddress::parse(&input)
+        .map_err(|e| typed_err(&env, CoreError::InvalidRelayAddress { msg: e.0 }))?;
+    Ok(ParsedAddress {
+        host: parsed.host,
+        public_key: Buffer::from(parsed.public_key.0.to_vec()),
+        receive_port: parsed.receive_port as u32,
+        push_port: parsed.push_port as u32,
+    })
+}
+
+/// The version triple for this build: `{sdkVersion, transportVersion,
+/// endToEndVersion}`, from the core constants (ADR-0022/0030).
+#[napi]
+pub fn trueseal_info() -> Info {
+    let info = trueseal_sync::ffi::trueseal_info();
+    Info {
+        sdk_version: info.sdk_version,
+        transport_version: info.transport_version,
+        end_to_end_version: info.end_to_end_version,
+    }
+}
+
+/// The Protocol Size Limit (61,440 bytes, ADR-0025), from the core constant.
+#[napi]
+pub fn trueseal_max_payload_bytes() -> u32 {
+    trueseal_sync::ffi::trueseal_max_payload_bytes()
+}
+
+/// The Maximum Group Size (32, ADR-0027), from the core constant.
+#[napi]
+pub fn trueseal_max_group_size() -> u32 {
+    trueseal_sync::ffi::trueseal_max_group_size()
 }
