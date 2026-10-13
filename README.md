@@ -1,4 +1,4 @@
-# trueseal-sync-ts
+# @trueseal/sync
 
 Node.js / Electron SDK for [trueseal-sync](https://github.com/julianbonomini/trueseal-sync) — E2EE, local-first device sync. No accounts, no plaintext on the relay, no lock-in.
 
@@ -8,31 +8,31 @@ Node.js / Electron SDK for [trueseal-sync](https://github.com/julianbonomini/tru
 
 ## Install
 
-> **Not yet published on npm** — install via git URL or build from source. Prebuilt binaries are planned.
->
-> **Requires a Rust toolchain** (`rustup`) — the package compiles a native `.node` binary at install time.
-
-Both repos must be siblings on disk:
-
-```
-trueseal/
-  trueseal-sync/       ← Rust core
-  trueseal-sync-ts/    ← this package
-```
+> **Not yet published on npm** — the `@trueseal/sync` package and its per-platform binaries are structured and pack-tested (see below), but the registry publish waits on the npm org. Until then, build from source:
 
 ```bash
-npm install git+https://github.com/julianbonomini/trueseal-sync-ts.git
-# or from source:
 git clone git@github.com:julianbonomini/trueseal-sync-ts.git && cd trueseal-sync-ts
 npm install && npm run build
 ```
+
+Once published:
+
+```bash
+npm install @trueseal/sync
+```
+
+**Requirements:** Node.js 20 or later.
+
+**Supported platforms** (prebuilt per-platform packages, `@trueseal/sync-<platform>`): macOS arm64 and x64, Linux x64 and arm64 (glibc), Windows x64. Linux **musl** (e.g. Alpine) and Windows **arm64** are **not supported** — the loader reports them as unsupported at import time.
+
+From source, the build needs a Rust toolchain (`rustup`); the core compiles from the pinned git revision in `Cargo.toml` (no sibling checkout needed).
 
 ---
 
 ## Quick start
 
 ```ts
-import { TrueSeal, TrueSealError } from 'trueseal-sync-ts'
+import { TrueSeal, TrueSealError } from '@trueseal/sync'
 
 // ── Open ─────────────────────────────────────────────────────────────────────
 // One Relay Address string — the relay's `address` command prints it.

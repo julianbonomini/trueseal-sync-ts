@@ -30,6 +30,9 @@ function fail(msg) {
   process.exit(1)
 }
 
+// spawnSync('npm') can't resolve npm.cmd without a shell on Windows.
+const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+
 function run(cmd, args, opts = {}) {
   const r = spawnSync(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', ...opts })
   if (r.status !== 0) {
@@ -75,14 +78,14 @@ const tmp = mkdtempSync(join(tmpdir(), 'trueseal-verify-'))
 console.log(`verify-install: staging in ${tmp}`)
 
 // ── 2. Pack the main package ──────────────────────────────────────────────────
-const mainTarball = join(tmp, run('npm', ['pack', '--pack-destination', tmp], { cwd: root }).split('\n').pop())
+const mainTarball = join(tmp, run(npmCmd, ['pack', '--pack-destination', tmp], { cwd: root }).split('\n').pop())
 
 // ── 3. Stage + pack the platform package (binary placed as napi-rs expects) ──
 const stagePlatform = join(tmp, 'platform-stage')
 mkdirSync(stagePlatform, { recursive: true })
 cpSync(platformDir, stagePlatform, { recursive: true })
 cpSync(builtNode, join(stagePlatform, `${binaryName}.${host.triple}.node`))
-const platformTarball = join(tmp, run('npm', ['pack', '--pack-destination', tmp], { cwd: stagePlatform }).split('\n').pop())
+const platformTarball = join(tmp, run(npmCmd, ['pack', '--pack-destination', tmp], { cwd: stagePlatform }).split('\n').pop())
 
 // ── 4. Fresh consumer project; install both tarballs ─────────────────────────
 // --no-optional: the optionalDependencies entries name the registry (paused on
@@ -91,7 +94,7 @@ const platformTarball = join(tmp, run('npm', ['pack', '--pack-destination', tmp]
 const consumer = join(tmp, 'consumer')
 mkdirSync(consumer, { recursive: true })
 writeFileSync(join(consumer, 'package.json'), JSON.stringify({ name: 'verify-consumer', version: '0.0.0', private: true }))
-run('npm', ['install', '--no-optional', '--no-audit', '--no-fund', '--ignore-scripts', mainTarball, platformTarball], { cwd: consumer })
+run(npmCmd, ['install', '--no-optional', '--no-audit', '--no-fund', '--ignore-scripts', mainTarball, platformTarball], { cwd: consumer })
 const installed = join(consumer, 'node_modules', '@trueseal', 'sync')
 if (!existsSync(installed)) fail('main package not installed under node_modules/@trueseal/sync')
 const installedPlatform = join(consumer, 'node_modules', '@trueseal', `sync-${host.dir}`)
