@@ -30,7 +30,7 @@ npm install && npm run build
 ## Quick start
 
 ```ts
-import { TruesealSyncClient, TruesealSyncError } from 'trueseal-sync-ts'
+import { TruesealSyncClient, TrueSealError } from 'trueseal-sync-ts'
 
 // ── Create ───────────────────────────────────────────────────────────────────
 // Relay connects in the background. Never throws due to relay being unreachable.
@@ -83,15 +83,15 @@ client.on('message', (blob, senderId, messageId) => {
 
 | Method | Returns | Throws | Notes |
 |--------|---------|--------|-------|
-| `TruesealSyncClient.create(config)` | `Promise<TruesealSyncClient>` | `TruesealSyncError` | Constructor. Relay connects in background. |
-| `pairingToken()` | `string` | — | Stable base64url token. Stateless — generate once and cache. |
-| `joinGroup(token)` | `void` | `TruesealSyncError` | Device B calls this with A's token. |
-| `acceptPairingRequest(requestToken)` | `boolean` | `TruesealSyncError` | Device A calls this from `memberRequest` event. |
-| `cancelPairing()` | `void` | `TruesealSyncError` | Close acceptance window without admitting. Call after accepting (single-use). |
-| `send(blob)` | `Promise<void>` | `TruesealSyncError` | Encrypted broadcast to all members. Queues offline; replays on reconnect. |
-| `removeMember(id)` | `void` | `TruesealSyncError` | Soft removal — no key rotation. |
-| `destroyGroup()` | `void` | `TruesealSyncError` | Revokes all members. Session is **terminal** — create a new client after. |
-| `dispose()` | `void` | — | Removes all listeners. Idempotent. See [Electron](#electron). |
+| `TruesealSyncClient.create(config)` | `Promise<TruesealSyncClient>` | `TrueSealError` | Constructor. Relay connects in background. |
+| `pairingToken()` | `string` | `TrueSealError` | Stable base64url token. Stateless — generate once and cache. |
+| `joinGroup(token)` | `void` | `TrueSealError` | Device B calls this with A's token. `invalidPairingToken` if malformed or spent. |
+| `acceptPairingRequest(requestId)` | `void` | `TrueSealError` | Device A calls this from `memberRequest` event. `pairingClosed` if the window closed or the id is unknown. |
+| `cancelPairing()` | `void` | `TrueSealError` | Close acceptance window without admitting. Call after accepting (single-use). |
+| `send(blob)` | `Promise<void>` | `TrueSealError` | Encrypted broadcast to all members. Queues offline; replays on reconnect. `notMember{status}` / `payloadTooLarge{max}`. |
+| `removeMember(id)` | `void` | `TrueSealError` | Soft removal — no key rotation. `memberNotFound` for an unknown id. |
+| `destroyGroup()` | `void` | `TrueSealError` | Revokes all members. Session is **terminal** — create a new client after. |
+| `dispose()` | `void` | — | Closes the core session and removes all listeners. Idempotent. See [Electron](#electron). |
 
 ### Identity (read-only)
 
@@ -116,15 +116,26 @@ client.on('message', (blob, senderId, messageId) => {
 
 ### Errors
 
-All errors surface as `TruesealSyncError extends Error`.
+All errors surface as `TrueSealError extends Error` with a typed `code` — one of
+exactly 14 canonical cases (no catch-all). The codes match the Swift and Kotlin
+SDKs character-for-character.
 
-| `err.message` | Cause |
-|---------------|-------|
-| `"not in any group"` | `send()` or `removeMember()` before pairing |
-| `"group has been destroyed"` | Operation on a terminal session |
-| `"invalid relay public key"` | Wrong byte length passed to `create()` |
-| `"invalid pairing token"` | `joinGroup()` received a malformed token |
-| `"member not found"` | `removeMember()` with an unknown ID |
+| `err.code` | Typed extras | Cause |
+|------------|--------------|-------|
+| `invalidRelayAddress` | — | Malformed relay host or wrong-length key passed to `create()` |
+| `invalidNamespace` | — | Illegal `namespace` |
+| `storage` | — | A durable write failed; nothing committed, retry is safe |
+| `closed` | — | Any call after `dispose()` |
+| `notMember` | `status` | `send()`/`removeMember()` without current membership |
+| `alreadyInGroup` | — | `joinGroup()` while in a group |
+| `invalidPairingToken` | — | `joinGroup()` received a malformed or spent token |
+| `pairingClosed` | — | Accept with the window closed or an unknown request id |
+| `groupFull` | `max` | Admission would exceed the group size limit |
+| `memberNotFound` | — | `removeMember()` with an unknown id |
+| `payloadTooLarge` | `max` | `send()` body over the Protocol Size Limit (61,440 bytes) |
+| `messageHandlerAlreadySet` | — | Second message-handler registration (one-shot) |
+| `storeTooNew` | `found`, `supported` | Session State was written by a newer release — upgrade the SDK |
+| `manifestVersionExhausted` | — | The group's version space is exhausted; the group must re-pair |
 
 ---
 

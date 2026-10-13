@@ -43,6 +43,63 @@ export interface Member {
   name: string
 }
 
+/**
+ * The group status (ADR-0028). Canonical camelCase codes from
+ * trueseal-sync docs/shared-facts.json (`statuses`) — the G12 parity source.
+ */
+export type GroupStatus =
+  | 'notJoined'
+  | 'pendingJoin'
+  | 'member'
+  | 'leaving'
+  | 'destroying'
+
+/**
+ * The canonical error codes (sync ADR-0028, amended by ADR-0032 and SYNC-15).
+ * Exactly 14 cases, character-for-character from trueseal-sync
+ * docs/shared-facts.json (`errors`) — the G12 parity source compares them
+ * across SDKs. There is NO catch-all: a core error that does not map to one
+ * of these is a bug, not a new string to match on.
+ */
+export type TrueSealErrorCode =
+  | 'invalidRelayAddress'
+  | 'invalidNamespace'
+  | 'storage'
+  | 'closed'
+  | 'notMember'
+  | 'alreadyInGroup'
+  | 'invalidPairingToken'
+  | 'pairingClosed'
+  | 'groupFull'
+  | 'memberNotFound'
+  | 'payloadTooLarge'
+  | 'messageHandlerAlreadySet'
+  | 'storeTooNew'
+  | 'manifestVersionExhausted'
+
+/**
+ * The canonical codes as a runtime list, in shared-facts.json order. The
+ * parity test pins this list exactly — a 15th canonical case in the core
+ * fails the native build (exhaustive Rust match) and any drift here fails
+ * the test.
+ */
+export const TRUESEAL_ERROR_CODES: readonly TrueSealErrorCode[] = [
+  'invalidRelayAddress',
+  'invalidNamespace',
+  'storage',
+  'closed',
+  'notMember',
+  'alreadyInGroup',
+  'invalidPairingToken',
+  'pairingClosed',
+  'groupFull',
+  'memberNotFound',
+  'payloadTooLarge',
+  'messageHandlerAlreadySet',
+  'storeTooNew',
+  'manifestVersionExhausted',
+]
+
 /** Configuration passed to {@link TruesealSyncClient.create}. */
 export interface TruesealSyncConfig {
   /** Relay hostname or IP (no port). */
@@ -61,14 +118,70 @@ export interface TruesealSyncConfig {
   namespace?: string
 }
 
-/** Error thrown by {@link TruesealSyncClient} operations. */
-export class TruesealSyncError extends Error {
-  constructor(message: string) {
+/**
+ * Every error the TrueSeal SDK throws (sync ADR-0028, as amended by ADR-0032
+ * and SYNC-15). Exactly 14 {@link TrueSealErrorCode} cases, one-to-one with
+ * the core — there is no catch-all.
+ *
+ * Typed extras, present only on the cases that carry them (same shape as the
+ * Swift and Kotlin SDKs):
+ * - `status`    — `notMember`: the {@link GroupStatus} the call saw
+ * - `max`       — `groupFull` / `payloadTooLarge`: the limit that was hit
+ * - `found`, `supported` — `storeTooNew`: the on-disk store version and the
+ *   highest version this SDK supports
+ */
+export class TrueSealError extends Error {
+  readonly code: TrueSealErrorCode
+  readonly status?: GroupStatus
+  readonly max?: number
+  readonly found?: number
+  readonly supported?: number
+
+  constructor(
+    code: TrueSealErrorCode,
+    message: string,
+    extras?: { status?: GroupStatus; max?: number; found?: number; supported?: number },
+  ) {
     super(message)
-    this.name = 'TruesealSyncError'
+    this.name = 'TrueSealError'
+    this.code = code
+    if (extras?.status !== undefined) this.status = extras.status
+    if (extras?.max !== undefined) this.max = extras.max
+    if (extras?.found !== undefined) this.found = extras.found
+    if (extras?.supported !== undefined) this.supported = extras.supported
     // Restore prototype chain (required when extending built-ins in TS).
     Object.setPrototypeOf(this, new.target.prototype)
   }
+}
+
+const _codeSet: ReadonlySet<string> = new Set(TRUESEAL_ERROR_CODES)
+
+/**
+ * Rethrow a native error as a typed {@link TrueSealError} when it carries a
+ * canonical code; propagate anything else UNCHANGED. There is deliberately
+ * no catch-all mapping — a native failure without a canonical code is not a
+ * TrueSealError (the mapping itself lives in Rust, as an exhaustive match).
+ */
+function rethrowTyped(err: unknown): never {
+  if (err instanceof Error) {
+    const code = (err as { code?: unknown }).code
+    if (typeof code === 'string' && _codeSet.has(code)) {
+      const e = err as Error & {
+        code: string
+        status?: unknown
+        max?: unknown
+        found?: unknown
+        supported?: unknown
+      }
+      throw new TrueSealError(code as TrueSealErrorCode, e.message, {
+        status: typeof e.status === 'string' ? (e.status as GroupStatus) : undefined,
+        max: typeof e.max === 'number' ? e.max : undefined,
+        found: typeof e.found === 'number' ? e.found : undefined,
+        supported: typeof e.supported === 'number' ? e.supported : undefined,
+      })
+    }
+  }
+  throw err
 }
 
 // ── TruesealSyncClient ────────────────────────────────────────────────────────────
@@ -88,11 +201,21 @@ export class TruesealSyncError extends Error {
  * ```
  */
 export declare interface TruesealSyncClient {
-  /** A Sync blob was received. Persist `messageId` with app state to ignore re-delivery. */
+  /**
+   * A Sync blob was received. `senderId` is the sender's member id (the same
+   * id as in {@link TruesealSyncClient.members}). Persist `messageId` with
+   * app state to ignore re-delivery after a crash mid-handling.
+   *
+   * LISTENER SEMANTICS (ADR-0026): the core AWAITS the handler — the relay
+   * is acked only after all synchronous listeners return. Return promptly:
+   * a listener parked for >75s wedges delivery for every message behind it
+   * and the client declares the session dead (the B23c liveness rule);
+   * long work belongs in a queue the listener feeds.
+   */
   on(event: 'message', listener: (blob: Buffer, senderId: string, messageId: string) => void): this
-  /** A new device joined the Sync Group. */
+  /** A new device joined the Sync Group. Return promptly — see 'message'. */
   on(event: 'memberJoined', listener: (member: Member) => void): this
-  /** A device was soft-removed from the Sync Group. */
+  /** A device was soft-removed from the Sync Group. Return promptly — see 'message'. */
   on(event: 'memberLeft', listener: (member: Member) => void): this
   /** This device was removed from the Sync Group by another member. */
   on(event: 'removedFromGroup', listener: () => void): this
@@ -102,9 +225,10 @@ export declare interface TruesealSyncClient {
   on(event: 'connectionChanged', listener: (connected: boolean) => void): this
   /**
    * A remote device is requesting to join the Sync Group.
-   * Call {@link acceptPairingRequest} with `requestToken` to admit it.
+   * Call {@link acceptPairingRequest} with `requestId` to admit it.
    */
-  on(event: 'memberRequest', listener: (requestToken: string, name: string) => void): this
+  on(event: 'memberRequest', listener: (requestId: string, name: string) => void): this
+
 
   off(event: 'message', listener: (blob: Buffer, senderId: string, messageId: string) => void): this
   off(event: 'memberJoined', listener: (member: Member) => void): this
@@ -112,14 +236,14 @@ export declare interface TruesealSyncClient {
   off(event: 'removedFromGroup', listener: () => void): this
   off(event: 'groupDestroyed', listener: () => void): this
   off(event: 'connectionChanged', listener: (connected: boolean) => void): this
-  off(event: 'memberRequest', listener: (requestToken: string, name: string) => void): this
+  off(event: 'memberRequest', listener: (requestId: string, name: string) => void): this
 }
 
 export class TruesealSyncClient extends EventEmitter {
-  private readonly _session: InstanceType<typeof native.HushSession>
+  private readonly _session: InstanceType<typeof native.CoreSession>
   private _disposed = false
 
-  private constructor(session: InstanceType<typeof native.HushSession>) {
+  private constructor(session: InstanceType<typeof native.CoreSession>) {
     super()
     this._session = session
   }
@@ -129,6 +253,10 @@ export class TruesealSyncClient extends EventEmitter {
   /**
    * Create a new client. The relay connects in the background — this never
    * rejects due to the relay being unreachable.
+   *
+   * Throws typed {@link TrueSealError} (`invalidRelayAddress`,
+   * `invalidNamespace`, `storage`, `storeTooNew`) for configuration and
+   * store failures.
    */
   static async create(config: TruesealSyncConfig): Promise<TruesealSyncClient> {
     const {
@@ -142,9 +270,9 @@ export class TruesealSyncClient extends EventEmitter {
     // via a late-binding wrapper.
     let client: TruesealSyncClient | undefined
 
-    let session: InstanceType<typeof native.HushSession>
+    let session: InstanceType<typeof native.CoreSession>
     try {
-      session = new native.HushSession(
+      session = new native.CoreSession(
         storageDir,
         namespace,
         relayHost,
@@ -156,7 +284,7 @@ export class TruesealSyncClient extends EventEmitter {
         (connected: boolean) => _safeEmit(client, 'connectionChanged', connected),
       )
     } catch (err) {
-      throw new TruesealSyncError(String(err instanceof Error ? err.message : err))
+      rethrowTyped(err)
     }
 
     client = new TruesealSyncClient(session)
@@ -166,21 +294,33 @@ export class TruesealSyncClient extends EventEmitter {
 
   // ── Identity ──────────────────────────────────────────────────────────────
 
-  /** Stable opaque identifier for this device. */
+  /** Stable opaque identifier for this device (the member id). */
   get localNodeId(): string {
-    return this._session.localNodeId()
+    try {
+      return this._session.localNodeId()
+    } catch (err) {
+      rethrowTyped(err)
+    }
   }
 
   /** Auto-generated display name for this device. */
   get localDeviceName(): string {
-    return this._session.localDeviceName()
+    try {
+      return this._session.localDeviceName()
+    } catch (err) {
+      rethrowTyped(err)
+    }
   }
 
   // ── Group ─────────────────────────────────────────────────────────────────
 
   /** Current remote group members (excludes this device). */
   get members(): Member[] {
-    return this._session.members()
+    try {
+      return this._session.members()
+    } catch (err) {
+      rethrowTyped(err)
+    }
   }
 
   /** Remove a group member by their `id` from {@link members}. */
@@ -188,7 +328,7 @@ export class TruesealSyncClient extends EventEmitter {
     try {
       this._session.removeMember(memberId)
     } catch (err) {
-      throw new TruesealSyncError(String(err instanceof Error ? err.message : err))
+      rethrowTyped(err)
     }
   }
 
@@ -199,43 +339,56 @@ export class TruesealSyncClient extends EventEmitter {
    * Show this to the peer (QR code, AirDrop, etc.) and pass it to their {@link joinGroup}.
    */
   pairingToken(): string {
-    return this._session.pairingToken()
+    try {
+      return this._session.pairingToken()
+    } catch (err) {
+      rethrowTyped(err)
+    }
   }
 
   /**
    * Join a group as the responding device using the initiator's token.
-   * Throws {@link TruesealSyncError} if the token is malformed.
+   * Throws typed {@link TrueSealError} (`invalidPairingToken`) if the token
+   * is malformed or its Pairing Secret was already spent.
    */
   joinGroup(token: string): void {
     try {
       this._session.joinGroup(token)
     } catch (err) {
-      throw new TruesealSyncError(String(err instanceof Error ? err.message : err))
+      rethrowTyped(err)
     }
   }
 
   /**
    * Register a listener for incoming pairing requests.
-   * Call {@link acceptPairingRequest} with `requestToken` to admit the device.
+   * Call {@link acceptPairingRequest} with `requestId` to admit the device.
    */
   /**
    * Convenience alias for `on('memberRequest', listener)`.
    *
    * A remote device is requesting to join the Sync Group. When the event fires,
-   * call {@link acceptPairingRequest} with `requestToken` to admit it.
+   * call {@link acceptPairingRequest} with `requestId` to admit it.
    *
    * Multiple listeners are supported and removable with `off('memberRequest', fn)`.
    */
-  onMemberRequest(listener: (requestToken: string, name: string) => void): void {
+  onMemberRequest(listener: (requestId: string, name: string) => void): void {
     this.on('memberRequest', listener)
   }
 
-  /** Admit a pending device by the opaque `requestToken` from {@link onMemberRequest}. */
-  acceptPairingRequest(requestToken: string): boolean {
+  /**
+   * Admit a pending device by the opaque `requestId` from {@link onMemberRequest}.
+   *
+   * Throws typed {@link TrueSealError} (`pairingClosed`) when the pairing
+   * window is closed or the request id is unknown (ADR-0023/0028 — an
+   * unaccepted request disappears when the window closes, so an unknown id
+   * IS an error in the canonical model; the pre-TS-3 boolean `false` return
+   * is gone).
+   */
+  acceptPairingRequest(requestId: string): void {
     try {
-      return this._session.acceptMember(requestToken)
+      this._session.acceptMember(requestId)
     } catch (err) {
-      throw new TruesealSyncError(String(err instanceof Error ? err.message : err))
+      rethrowTyped(err)
     }
   }
 
@@ -244,7 +397,7 @@ export class TruesealSyncClient extends EventEmitter {
     try {
       this._session.cancelPairing()
     } catch (err) {
-      throw new TruesealSyncError(String(err instanceof Error ? err.message : err))
+      rethrowTyped(err)
     }
   }
 
@@ -252,33 +405,39 @@ export class TruesealSyncClient extends EventEmitter {
 
   /**
    * Encrypt `blob` and fan it out to all current Sync Group members.
-   * Throws {@link TruesealSyncError} if this device is not yet in a group.
+   * Throws typed {@link TrueSealError}: `payloadTooLarge` (carries `max`) if
+   * the body exceeds the Protocol Size Limit, `notMember` (carries `status`)
+   * if this device is not currently a member.
    *
    * @note The underlying Rust call is synchronous. The `async` signature is
    * intentional: it future-proofs the API for when `send` is moved off the
    * main thread, and keeps call-site ergonomics consistent with other
    * async-style APIs in trueseal-sync. `await client.send(...)` works correctly
    * and never suspends the event loop.
+   *
+   * @note The native layer returns the stable Message ID once the message is
+   * durably queued; SDK-1 (TS) exposes it on the public signature.
    */
   async send(blob: Buffer): Promise<void> {
     try {
       this._session.send(blob)
     } catch (err) {
-      throw new TruesealSyncError(String(err instanceof Error ? err.message : err))
+      rethrowTyped(err)
     }
   }
 
   // ── Destroy ───────────────────────────────────────────────────────────────
 
   /**
-   * Destroy the Sync Group — push a Revoke to all members and wipe local state.
-   * All members receive a `groupDestroyed` event. Session is terminal after this.
+   * Destroy the Sync Group — queue a durable, forwarded Revoke to all
+   * members (ADR-0029); the wipe fires when the relay has accepted every
+   * Revoke. All members receive a `groupDestroyed` event.
    */
   destroyGroup(): void {
     try {
       this._session.destroyGroup()
     } catch (err) {
-      throw new TruesealSyncError(String(err instanceof Error ? err.message : err))
+      rethrowTyped(err)
     }
   }
 
@@ -291,19 +450,20 @@ export class TruesealSyncClient extends EventEmitter {
 
   /**
    * Release client resources:
+   * - closes the core session (stops the connection, the receive/pump
+   *   threads and the handler; Session State is kept on disk — ADR-0028
+   *   `close()`; idempotent)
    * - removes all EventEmitter listeners so no callbacks fire on a
    *   destroyed window or stale context
    * - sets {@link disposed} to `true`
    *
-   * The underlying relay connection is held by the Rust session and will be
-   * closed when it is garbage-collected. TSFNs are already `unref()`'d so
-   * they do not prevent process exit.
-   *
-   * Safe to call multiple times (idempotent).
+   * After `dispose()`, every call throws typed {@link TrueSealError}
+   * (`closed`).
    */
   dispose(): void {
     if (this._disposed) return
     this._disposed = true
+    this._session.close()
     this.removeAllListeners()
   }
 
@@ -325,6 +485,6 @@ export class TruesealSyncClient extends EventEmitter {
       _safeEmit(this, 'memberRequest', token, name)
     })
     // on_message, on_removed_from_group, on_group_destroyed, on_connection_changed
-    // are wired at construction time via the native.HushSession constructor.
+    // are wired at construction time via the native.CoreSession constructor.
   }
 }

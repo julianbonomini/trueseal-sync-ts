@@ -7,6 +7,9 @@
 //   - Preventing stale event handlers firing on a destroyed context
 //
 // dispose():
+//   - closes the core session (ADR-0028 close(): connection, threads and
+//     handler stop; Session State kept on disk; every later call throws
+//     typed `closed`) — TS-3 wired the real close path
 //   - removes all EventEmitter listeners (no more callbacks fire)
 //   - sets client.disposed = true
 //   - is idempotent (safe to call multiple times)
@@ -19,7 +22,7 @@ import { join } from 'node:path'
 import { mkdtempSync } from 'node:fs'
 
 import indexPkg from '../dist/index.js'
-const { TruesealSyncClient } = indexPkg
+const { TruesealSyncClient, TrueSealError } = indexPkg
 
 const RELAY_PUB = Buffer.alloc(32, 0x01)
 const TMP = () => mkdtempSync(join(tmpdir(), 'trueseal-p5-test-'))
@@ -80,10 +83,16 @@ test('[Symbol.dispose]() sets disposed = true', async () => {
 
 // ── Post-dispose safety ───────────────────────────────────────────────────────
 
-test('identity getters still work after dispose', async () => {
+test('calls after dispose throw typed closed (TS-3: dispose really closes)', async () => {
   const client = await makeClient()
   client.dispose()
-  // Read-only getters should not throw — session data is still accessible.
-  ok(typeof client.localNodeId === 'string')
-  ok(typeof client.localDeviceName === 'string')
+  // dispose() now calls the core's close() (ADR-0028): the connection, the
+  // receive/pump threads and the handler all stop, and every subsequent
+  // call fails with typed `closed`. Session State stays on disk.
+  for (const read of [() => client.localNodeId, () => client.localDeviceName, () => client.members]) {
+    let thrown = null
+    try { read() } catch (err) { thrown = err }
+    ok(thrown instanceof TrueSealError, `expected TrueSealError, got ${thrown?.constructor?.name}`)
+    strictEqual(thrown.code, 'closed')
+  }
 })
