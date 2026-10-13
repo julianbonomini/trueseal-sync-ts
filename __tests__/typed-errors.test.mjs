@@ -1,12 +1,11 @@
-// TS-3: the typed error surface against the REAL core.
+// The typed error surface against the REAL core.
 //
 // Every test here triggers an actual core error through the public API and
 // asserts its canonical `code` (and typed extras where the case carries
 // them). All reachable without a relay; the codes that require group or
 // store state (alreadyInGroup, groupFull, memberNotFound, storage,
-// messageHandlerAlreadySet, storeTooNew, manifestVersionExhausted) are
-// covered through the bindings by the e2e harness and the SDK-1 work —
-// the exhaustiveness GUARD is what protects them here:
+// storeTooNew, manifestVersionExhausted) are covered through the bindings
+// by the e2e harness — the exhaustiveness GUARD is what protects them here:
 //
 //   - The Rust mapping is an exhaustive match over the core's 14-variant
 //     TrueSealError with NO wildcard: a 15th core variant fails the native
@@ -15,25 +14,21 @@
 //     shared-facts.json order — the G12 parity check compares this list
 //     across the three SDKs.
 
-import { ok, strictEqual, deepStrictEqual, rejects } from 'node:assert'
+import { ok, strictEqual, deepStrictEqual } from 'node:assert'
 import { test } from 'node:test'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { mkdtempSync } from 'node:fs'
 
 import indexPkg from '../dist/index.js'
-const { TruesealSyncClient, TrueSealError, TRUESEAL_ERROR_CODES } = indexPkg
+const { TrueSeal, TrueSealError, TRUESEAL_ERROR_CODES } = indexPkg
 
-const RELAY_PUB = Buffer.alloc(32, 0x01)
+const KEY_HEX = Buffer.alloc(32, 0x01).toString('hex')
+const ADDRESS = `trueseal://${KEY_HEX}@127.0.0.1`
 const TMP = () => mkdtempSync(join(tmpdir(), 'trueseal-typed-'))
 
-async function makeClient(namespace = 'typed') {
-  return TruesealSyncClient.create({
-    relayHost: '127.0.0.1',
-    relayPublicKey: RELAY_PUB,
-    storageDir: TMP(),
-    namespace,
-  })
+async function open(namespace = 'typed') {
+  return TrueSeal.open(ADDRESS, { storageDir: TMP(), namespace })
 }
 
 // ── The canonical code list (exhaustiveness guard) ────────────────────────────
@@ -59,133 +54,113 @@ test('TRUESEAL_ERROR_CODES is exactly the 14 canonical cases, in shared-facts or
 
 // ── invalidRelayAddress ───────────────────────────────────────────────────────
 
-test('create() with a wrong-length relay key: invalidRelayAddress', async () => {
-  await rejects(
-    () => TruesealSyncClient.create({
-      relayHost: '127.0.0.1',
-      relayPublicKey: Buffer.alloc(16),
-      storageDir: TMP(),
-    }),
-    (err) => {
-      ok(err instanceof TrueSealError, `expected TrueSealError, got ${err}`)
-      strictEqual(err.code, 'invalidRelayAddress')
-      return true
-    },
-  )
-})
-
-test('create() with a malformed authority (a second @): invalidRelayAddress', async () => {
-  await rejects(
-    () => TruesealSyncClient.create({
-      relayHost: 'bad@host',
-      relayPublicKey: RELAY_PUB,
-      storageDir: TMP(),
-    }),
+test('open() with a malformed Relay Address: invalidRelayAddress', async () => {
+  await TrueSeal.open('not a relay address', { storageDir: TMP() }).then(
+    () => ok(false, 'must reject'),
     (err) => {
       ok(err instanceof TrueSealError)
       strictEqual(err.code, 'invalidRelayAddress')
-      return true
     },
   )
 })
 
 // ── invalidNamespace ──────────────────────────────────────────────────────────
 
-test('create() with an illegal namespace: invalidNamespace', async () => {
-  await rejects(
-    () => TruesealSyncClient.create({
-      relayHost: '127.0.0.1',
-      relayPublicKey: RELAY_PUB,
-      storageDir: TMP(),
-      namespace: 'bad namespace!',
-    }),
+test('open() with an illegal namespace: invalidNamespace', async () => {
+  await TrueSeal.open(ADDRESS, { storageDir: TMP(), namespace: 'bad namespace!' }).then(
+    () => ok(false, 'must reject'),
     (err) => {
       ok(err instanceof TrueSealError)
       strictEqual(err.code, 'invalidNamespace')
-      return true
     },
   )
 })
 
 // ── notMember (typed status extra) ────────────────────────────────────────────
 
-test('send() before joining: notMember with status notJoined', async () => {
-  const client = await makeClient()
-  await rejects(
-    () => client.send(Buffer.from('hello')),
-    (err) => {
-      ok(err instanceof TrueSealError)
-      strictEqual(err.code, 'notMember')
-      strictEqual(err.status, 'notJoined')
-      return true
-    },
-  )
+test('send() while not a member: notMember carrying status', async () => {
+  const ts = await open()
+  try {
+    ts.send(Buffer.from('x'))
+    ok(false, 'must throw')
+  } catch (err) {
+    ok(err instanceof TrueSealError)
+    strictEqual(err.code, 'notMember')
+    strictEqual(err.status, 'notJoined')
+  }
+  ts.close()
 })
 
 // ── payloadTooLarge (typed max extra) ─────────────────────────────────────────
 
 test('send() over the Protocol Size Limit: payloadTooLarge with max 61440', async () => {
-  const client = await makeClient()
-  // The size check is synchronous and precedes the membership check
-  // (ADR-0025), so no group is needed.
-  await rejects(
-    () => client.send(Buffer.alloc(61_441, 0x61)),
-    (err) => {
-      ok(err instanceof TrueSealError)
-      strictEqual(err.code, 'payloadTooLarge')
-      strictEqual(err.max, 61_440)
-      return true
-    },
-  )
+  const ts = await open()
+  try {
+    ts.send(Buffer.alloc(61441))
+    ok(false, 'must throw')
+  } catch (err) {
+    ok(err instanceof TrueSealError)
+    strictEqual(err.code, 'payloadTooLarge')
+    strictEqual(err.max, 61440)
+  }
+  ts.close()
+})
+
+// ── messageHandlerAlreadySet ──────────────────────────────────────────────────
+
+test('a second onMessage: messageHandlerAlreadySet', async () => {
+  const ts = await open()
+  ts.onMessage(() => {})
+  try {
+    ts.onMessage(() => {})
+    ok(false, 'must throw')
+  } catch (err) {
+    ok(err instanceof TrueSealError)
+    strictEqual(err.code, 'messageHandlerAlreadySet')
+  }
+  ts.close()
 })
 
 // ── invalidPairingToken ───────────────────────────────────────────────────────
 
-test('joinGroup() with a garbage token: invalidPairingToken', async () => {
-  const client = await makeClient()
-  let thrown = null
+test('join() with a malformed token: invalidPairingToken', async () => {
+  const ts = await open()
   try {
-    client.joinGroup('not-a-token')
+    ts.join('%%not-a-token%%')
+    ok(false, 'must throw')
   } catch (err) {
-    thrown = err
+    ok(err instanceof TrueSealError)
+    strictEqual(err.code, 'invalidPairingToken')
   }
-  ok(thrown instanceof TrueSealError, `expected TrueSealError, got ${thrown}`)
-  strictEqual(thrown.code, 'invalidPairingToken')
+  ts.close()
 })
 
 // ── pairingClosed ─────────────────────────────────────────────────────────────
 
-test('acceptPairingRequest() with an unknown request: pairingClosed', async () => {
-  const client = await makeClient()
-  let thrown = null
+test('accept() with an unknown request id: pairingClosed', async () => {
+  const ts = await open()
+  ts.startPairing()
   try {
-    client.acceptPairingRequest('no-such-request')
+    ts.accept('unknown-request-id')
+    ok(false, 'must throw')
   } catch (err) {
-    thrown = err
+    ok(err instanceof TrueSealError)
+    strictEqual(err.code, 'pairingClosed')
   }
-  ok(thrown instanceof TrueSealError)
-  strictEqual(thrown.code, 'pairingClosed')
+  ts.cancelPairing()
+  ts.close()
 })
 
 // ── closed ────────────────────────────────────────────────────────────────────
 
-test('every call after dispose(): closed', async () => {
-  const client = await makeClient()
-  client.dispose()
-  await rejects(
-    () => client.send(Buffer.from('hello')),
-    (err) => {
-      ok(err instanceof TrueSealError)
-      strictEqual(err.code, 'closed')
-      return true
-    },
-  )
-  let thrown = null
+test('calls after close(): typed closed', async () => {
+  const ts = await open()
+  ts.close()
   try {
-    client.pairingToken()
+    ts.send(Buffer.from('x'))
+    ok(false, 'must throw')
   } catch (err) {
-    thrown = err
+    ok(err instanceof TrueSealError)
+    strictEqual(err.code, 'closed')
   }
-  ok(thrown instanceof TrueSealError)
-  strictEqual(thrown.code, 'closed')
 })
