@@ -61,6 +61,12 @@ jobs:
             exit 1
           fi
 
+      # SDK-3 (#11): version/limit values are generated from the core — a
+      # hand-written literal in SDK sources is a drift bug. Negative-tested
+      # in __tests__/generated-info.test.mjs.
+      - name: No hand-written version or limit literals
+        run: node scripts/check-no-literal-limits.mjs
+
   build-test:
     needs: pin-guard
     strategy:

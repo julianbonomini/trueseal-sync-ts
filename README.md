@@ -86,7 +86,7 @@ const messageId = ts.send(Buffer.from(JSON.stringify({ type: 'clip', content: 'h
 |--------|------|---------|-------|
 | `storageDir` | `string` | `~/.trueseal-sync` | **Scope to your app** — see Storage below |
 | `namespace` | `string` | `"default"` | One session per namespace per `storageDir` |
-| `maxPayloadBytes` | `number` | `61440` | Creation-time limit; can only lower the Protocol Size Limit |
+| `maxPayloadBytes` | `number` | the Protocol Size Limit | Creation-time limit; can only lower it — see `TrueSeal.maxPayloadBytes` |
 
 ### State (getters, fresh from the core on every read)
 
@@ -141,7 +141,7 @@ character-for-character:
 
 ### Statics
 
-`TrueSeal.info` (`{sdkVersion, transportVersion, endToEndVersion}`) · `TrueSeal.maxPayloadBytes` (61,440) · `TrueSeal.maxGroupSize` (32) · `TrueSeal.parseRelayAddress(input)` → `RelayAddress` (`invalidRelayAddress` on malformed input).
+`TrueSeal.info` (`{sdkVersion, transportVersion, endToEndVersion}`) · `TrueSeal.maxPayloadBytes` (the Protocol Size Limit) · `TrueSeal.maxGroupSize` (the Maximum Group Size) · `TrueSeal.parseRelayAddress(input)` → `RelayAddress` (`invalidRelayAddress` on malformed input). The numeric values are generated from the core — read them from the API, never from docs.
 
 ---
 
