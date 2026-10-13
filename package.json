@@ -40,7 +40,7 @@
     "build": "napi build --platform --release && npx tsc",
     "build:debug": "napi build --platform && npx tsc",
     "build:ts": "npx tsc",
-    "test": "node --test --test-force-exit '__tests__/**/*.mjs'"
+    "test": "node --test --test-force-exit __tests__/"
   },
   "napi": {
     "binaryName": "trueseal-sync-ts",
