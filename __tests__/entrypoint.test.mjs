@@ -1,5 +1,6 @@
-// Public entrypoint — package importable as 'trueseal-sync-ts'.
-// Tests verify ESM and CJS resolution both work correctly.
+// Public entrypoint — the package is '@trueseal/sync' on npm (TS-1, #14);
+// these tests verify ESM and CJS resolution of the local package root.
+// The fresh-project install shape is scripts/verify-install.mjs.
 import { strictEqual, ok } from 'node:assert'
 import { test } from 'node:test'
 import { createRequire } from 'node:module'

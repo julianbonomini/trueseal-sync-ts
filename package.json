@@ -1,6 +1,6 @@
 {
-  "name": "trueseal-sync-ts",
-  "version": "0.1.0",
+  "name": "@trueseal/sync",
+  "version": "0.6.0",
   "description": "Node.js / Electron SDK for trueseal-sync — E2EE, local-first device sync without accounts or lock-in",
   "type": "commonjs",
   "main": "dist/index.js",
@@ -58,6 +58,13 @@
     "typescript": "^6.0.3"
   },
   "engines": {
-    "node": ">= 18"
+    "node": ">= 20"
+  },
+  "optionalDependencies": {
+    "@trueseal/sync-darwin-arm64": "0.6.0",
+    "@trueseal/sync-darwin-x64": "0.6.0",
+    "@trueseal/sync-linux-x64-gnu": "0.6.0",
+    "@trueseal/sync-linux-arm64-gnu": "0.6.0",
+    "@trueseal/sync-win32-x64-msvc": "0.6.0"
   }
 }

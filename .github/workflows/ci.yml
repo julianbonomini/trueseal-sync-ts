@@ -4,17 +4,17 @@ name: ci
 # main. npm targets (release spec): macOS arm64 + x64, Linux x64 + arm64
 # (glibc), Windows x64, on Node 20 and the current LTS (22).
 #
-# CORE PIN (G8): Cargo.toml builds the core through the sibling path dep
-# `trueseal-sync = { path = "../trueseal-sync" }`. In CI that path is a checkout
-# this workflow creates itself, at the exact commit recorded in core-rev.txt —
-# no ambient sibling checkout, no TRUESEAL_READ_TOKEN (both repos are public).
+# CORE PIN (G8): TS-1 (#14) replaced the sibling path dep with a pinned git
+# dep — Cargo.toml builds the core through
+#   trueseal-sync = { git = "...", rev = "<full SHA>" }
+# and core-rev.txt records the same SHA for humans and for the SDK repos'
+# mirror tooling. The pin-guard step below fails the build if the two drift.
 #
-# The pin is currently 90c08cc (2026-09-17): the last core commit the current
-# NAPI bindings compile against. The SYNC-15 FFI reshape (canonical TrueSeal
-# API) renamed TruesealFfiSession and replaced the callback types; TS-3 (#16)
-# and SDK-1 (#9) rewrite these bindings and MUST bump core-rev.txt as part of
-# that work. TS-1 (#14) replaces the path dep with a pinned git dep; this file
-# documents the seam until then.
+# TS-1 install check: every matrix leg ends with scripts/verify-install.mjs —
+# pack main + host platform package, install both into a fresh project
+# (--no-optional: registry resolution of the scoped optional dependency is
+# paused on the npm org, maintainer item A1), load via require AND import,
+# probe the canonical statics, and tsc-type-check a consumer snippet.
 
 on:
   push:
@@ -37,7 +37,32 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm audit --audit-level=high
 
+  pin-guard:
+    # The Cargo.toml git rev MUST equal core-rev.txt (G8 single source).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cargo.toml rev matches core-rev.txt
+        shell: bash
+        run: |
+          expected=$(tr -d '[:space:]' < core-rev.txt)
+          test -n "$expected" || { echo "core-rev.txt is empty or missing" >&2; exit 1; }
+          actual=$(grep -oP 'trueseal-sync = \{ git = "[^"]+", rev = "\K[0-9a-f]{40}' Cargo.toml || true)
+          [ "$actual" = "$expected" ] || {
+            echo "core pin drift: Cargo.toml rev '$actual' != core-rev.txt '$expected'" >&2
+            exit 1
+          }
+          echo "core pin verified: $actual"
+      - name: No sibling path dependency remains
+        shell: bash
+        run: |
+          if grep -n 'trueseal-sync = { path' Cargo.toml; then
+            echo "sibling path dependency is back — G8 forbids it" >&2
+            exit 1
+          fi
+
   build-test:
+    needs: pin-guard
     strategy:
       fail-fast: false
       matrix:
@@ -49,47 +74,17 @@ jobs:
         # across three runs without ever starting (hosted-runner capacity),
         # while macos-15-intel schedules promptly.
     runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        working-directory: trueseal-sync-ts
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: trueseal-sync-ts
-
-      - name: Read the pinned core revision
-        id: pin
-        shell: bash
-        run: |
-          rev=$(tr -d '[:space:]' < core-rev.txt)
-          test -n "$rev" || { echo "core-rev.txt is empty or missing" >&2; exit 1; }
-          echo "rev=$rev" >> "$GITHUB_OUTPUT"
-
-      - name: Check out the pinned core at the sibling path
-        uses: actions/checkout@v4
-        with:
-          repository: julianbonomini/trueseal-sync
-          ref: ${{ steps.pin.outputs.rev }}
-          path: trueseal-sync
-
-      - name: Verify the core checkout matches the pin
-        shell: bash
-        run: |
-          expected=$(tr -d '[:space:]' < core-rev.txt)
-          actual=$(git -C ../trueseal-sync rev-parse HEAD)
-          [ "$actual" = "$expected" ] || { echo "core checkout mismatch: got $actual, want $expected" >&2; exit 1; }
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: trueseal-sync-ts
 
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-          cache-dependency-path: trueseal-sync-ts/package-lock.json
 
       - name: Build (napi native module + TypeScript)
         run: npm ci && npm run build
@@ -102,7 +97,11 @@ jobs:
         if: always()
         run: node scripts/report-skips.mjs test-output.txt
 
+      - name: Verify install (pack + fresh-project require/import/tsc)
+        run: node scripts/verify-install.mjs
+
   build-linux-arm64:
+    needs: pin-guard
     # Cross-compile leg for the fifth npm target. Build-only: an x64 runner
     # can't execute the arm64 .node without emulation, and runtime coverage on
     # linux-arm64 belongs to trueseal-e2e's harness (per the issue: leave
@@ -110,35 +109,8 @@ jobs:
     # PR, which is the failure class (linker/toolchain breakage) that would
     # otherwise surface only at release packaging time.
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: trueseal-sync-ts
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: trueseal-sync-ts
-
-      - name: Read the pinned core revision
-        id: pin
-        shell: bash
-        run: |
-          rev=$(tr -d '[:space:]' < core-rev.txt)
-          test -n "$rev" || { echo "core-rev.txt is empty or missing" >&2; exit 1; }
-          echo "rev=$rev" >> "$GITHUB_OUTPUT"
-
-      - name: Check out the pinned core at the sibling path
-        uses: actions/checkout@v4
-        with:
-          repository: julianbonomini/trueseal-sync
-          ref: ${{ steps.pin.outputs.rev }}
-          path: trueseal-sync
-
-      - name: Verify the core checkout matches the pin
-        shell: bash
-        run: |
-          expected=$(tr -d '[:space:]' < core-rev.txt)
-          actual=$(git -C ../trueseal-sync rev-parse HEAD)
-          [ "$actual" = "$expected" ] || { echo "core checkout mismatch: got $actual, want $expected" >&2; exit 1; }
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -151,7 +123,6 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: trueseal-sync-ts/package-lock.json
 
       - name: Cross-build the arm64 native module
         env:
