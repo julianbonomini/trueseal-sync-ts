@@ -2,11 +2,13 @@
 
 Node.js / Electron SDK for [trueseal-sync](https://github.com/julianbonomini/trueseal-sync) — E2EE, local-first device sync. No accounts, no plaintext on the relay, no lock-in.
 
+**Developer Preview** — 0.x. Any release may break the API, the wire format or stored data; breaking releases ship upgrade notes.
+
 ---
 
 ## Install
 
-> **Not yet published on npm** — install via git URL or build from source. Prebuilt binaries are planned; see [#prebuilds](https://github.com/julianbonomini/trueseal-sync-ts/issues).
+> **Not yet published on npm** — install via git URL or build from source. Prebuilt binaries are planned.
 >
 > **Requires a Rust toolchain** (`rustup`) — the package compiles a native `.node` binary at install time.
 
@@ -30,112 +32,116 @@ npm install && npm run build
 ## Quick start
 
 ```ts
-import { TruesealSyncClient, TrueSealError } from 'trueseal-sync-ts'
+import { TrueSeal, TrueSealError } from 'trueseal-sync-ts'
 
-// ── Create ───────────────────────────────────────────────────────────────────
-// Relay connects in the background. Never throws due to relay being unreachable.
-const client = await TruesealSyncClient.create({
-  relayHost: 'relay.example.com',
-  relayPublicKey: Buffer.from('3f783127c25c91ac8ea02ab97edca78e5708e0c686fa0cc2e714c135c7cd095e', 'hex'),
-  storageDir: '/path/to/your-app/trueseal',   // scope to your app — see Storage below
-  namespace: 'default',
-})
+// ── Open ─────────────────────────────────────────────────────────────────────
+// One Relay Address string — the relay's `address` command prints it.
+// The relay connects in the background; open never fails for reachability.
+const ts = await TrueSeal.open(
+  'trueseal://3f783127c25c91ac8ea02ab97edca78e5708e0c686fa0cc2e714c135c7cd095e@relay.example.com',
+  { storageDir: '/path/to/your-app/trueseal' },   // scope to your app — see Storage below
+)
 
-// ── Pair: Device A (host) ─────────────────────────────────────────────────────
-const token = client.pairingToken()       // stable, stateless — cache it
+// ── Pair: Device A (admitter) ────────────────────────────────────────────────
+const token = ts.startPairing()        // opens the Pairing Window
 // → show token as QR / AirDrop / paste
 
-client.on('memberRequest', (requestToken, name) => {
-  client.acceptPairingRequest(requestToken)
+ts.onEvent((event) => {
+  if (event.type === 'joinRequest') {
+    ts.accept(event.request.id)        // admit the knocking device
+  }
 })
 
-// ── Pair: Device B (joiner) ───────────────────────────────────────────────────
-client.joinGroup(token)
+// ── Pair: Device B (joiner) ──────────────────────────────────────────────────
+ts.join(token)                          // moves to pendingJoin; member when admitted
 
-// ── Both sides ────────────────────────────────────────────────────────────────
-client.on('memberJoined', (member) => {
-  console.log(`${member.name} joined — id: ${member.id}`)
+// ── Both sides ───────────────────────────────────────────────────────────────
+ts.onEvent((event) => {
+  if (event.type === 'statusChanged' && event.status === 'member') {
+    console.log('in the group:', ts.members.map((m) => m.name).join(', '))
+  }
 })
 
-// ── Send + receive ────────────────────────────────────────────────────────────
-await client.send(Buffer.from(JSON.stringify({ type: 'clip', content: 'hello' })))
-
-client.on('message', (blob, senderId, messageId) => {
-  // Atomically store messageId with your app data. Ignore it if already stored.
-  const msg = JSON.parse(blob.toString())
+// ── Send + receive ───────────────────────────────────────────────────────────
+ts.onMessage(async (message) => {
+  // Awaited: the relay is acked only after this returns. Return promptly —
+  // long work belongs in a queue this handler feeds. Delivery is at least
+  // once: persist message.id with your app state and ignore re-deliveries.
+  const msg = JSON.parse(message.body.toString())
+  console.log('from', message.from.name, msg)
 })
+
+const messageId = ts.send(Buffer.from(JSON.stringify({ type: 'clip', content: 'hello' })))
 ```
 
 ---
 
 ## API
 
-### Config
+### `TrueSeal.open(relay, options?)` → `Promise<TrueSeal>`
 
-| Field | Type | Default | Notes |
-|-------|------|---------|-------|
-| `relayHost` | `string` | — | Hostname or IP, no port |
-| `relayPublicKey` | `Buffer` | — | 32-byte X25519 key — build-time constant, not user-configurable |
-| `storageDir` | `string` | `~/.trueseal-sync` | **Scope to your app** — see [Storage](#storage) |
+`relay` is the Relay Address string (`trueseal://<relay public key hex>@host[:receivePort][?push=pushPort]`) or the typed `RelayAddress` form. The ports default to 7700/7701 and are never dropped silently.
+
+| Option | Type | Default | Notes |
+|--------|------|---------|-------|
+| `storageDir` | `string` | `~/.trueseal-sync` | **Scope to your app** — see Storage below |
 | `namespace` | `string` | `"default"` | One session per namespace per `storageDir` |
+| `maxPayloadBytes` | `number` | `61440` | Creation-time limit; can only lower the Protocol Size Limit |
+
+### State (getters, fresh from the core on every read)
+
+| Getter | Type | Notes |
+|--------|------|-------|
+| `status` | `GroupStatus` | `notJoined \| pendingJoin \| member \| leaving \| destroying` |
+| `me` | `Member` | This device's `{id, name}` |
+| `members` | `Member[]` | Remote members only — the local device excluded |
+| `connection` | `ConnectionState` | `connecting \| connected \| disconnected \| relayVersionUnsupported{min,max}` |
 
 ### Methods
 
-| Method | Returns | Throws | Notes |
-|--------|---------|--------|-------|
-| `TruesealSyncClient.create(config)` | `Promise<TruesealSyncClient>` | `TrueSealError` | Constructor. Relay connects in background. |
-| `pairingToken()` | `string` | `TrueSealError` | Stable base64url token. Stateless — generate once and cache. |
-| `joinGroup(token)` | `void` | `TrueSealError` | Device B calls this with A's token. `invalidPairingToken` if malformed or spent. |
-| `acceptPairingRequest(requestId)` | `void` | `TrueSealError` | Device A calls this from `memberRequest` event. `pairingClosed` if the window closed or the id is unknown. |
-| `cancelPairing()` | `void` | `TrueSealError` | Close acceptance window without admitting. Call after accepting (single-use). |
-| `send(blob)` | `Promise<void>` | `TrueSealError` | Encrypted broadcast to all members. Queues offline; replays on reconnect. `notMember{status}` / `payloadTooLarge{max}`. |
-| `removeMember(id)` | `void` | `TrueSealError` | Soft removal — no key rotation. `memberNotFound` for an unknown id. |
-| `destroyGroup()` | `void` | `TrueSealError` | Revokes all members. Session is **terminal** — create a new client after. |
-| `dispose()` | `void` | — | Closes the core session and removes all listeners. Idempotent. See [Electron](#electron). |
+| Method | Returns | Notes |
+|--------|---------|-------|
+| `send(body)` | `string` | The MessageId, once the message is durably in the outbox. Queues offline; replays on reconnect. `notMember{status}` / `payloadTooLarge{max}`. |
+| `onMessage(handler)` | `Subscription` | THE message handler — async and awaited. One-shot: a second call fails with `messageHandlerAlreadySet`. Registering starts receiving. |
+| `onEvent(listener)` | `Subscription` | The canonical event stream (below). Any number of listeners; events before the first are buffered. |
+| `onDeliveryIssue(listener)` | `Subscription` | Optional typed delivery-problem stream. |
+| `startPairing()` | `string` | Opens the Pairing Window; returns the token. No expiry timer — close it with `cancelPairing()`. |
+| `accept(requestId)` | `void` | Admit from a `joinRequest` event. `pairingClosed` / `groupFull{max}`. |
+| `cancelPairing()` | `void` | Close the window without admitting. |
+| `join(token)` | `void` | Join as the responding device. `alreadyInGroup` / `invalidPairingToken`. |
+| `cancelJoin()` | `void` | Abandon a Pending Join; back to `notJoined`. |
+| `remove(memberId)` | `void` | Remove a member; their library wipes and rotates automatically. `memberNotFound`. |
+| `leave()` | `void` | Move through `leaving` to `notJoined` (reason `left`). |
+| `destroyGroup()` | `void` | Durable, forwarded Revoke to all members (see below). |
+| `close()` | `void` | Stop the connection and handlers; keep Session State. Idempotent. After it, every call throws `closed`. |
 
-### Identity (read-only)
+Every `on…` returns a `Subscription`; `cancel()` stops that listener. Cancelling the message handler does NOT re-enable registration (one-shot per object).
 
-| Property | Type | Notes |
-|----------|------|-------|
-| `localNodeId` | `string` | Stable opaque ID — base64url of first 8 bytes of signing key |
-| `localDeviceName` | `string` | Human-readable, e.g. `"AmberFalcon"` — deterministic from keypair |
-| `members` | `Member[]` | Remote members only — **local device excluded** |
-| `disposed` | `boolean` | `true` after `dispose()` |
+### Events (`onEvent`)
 
-### Events
+| `event.type` | Payload | When |
+|--------------|---------|------|
+| `statusChanged` | `status`, `reason` | Asynchronous transitions only: `member/created`, `member/joined`, `notJoined/left\|removed\|destroyed\|storeReset`. Synchronous transitions (`join`, `leave`, `destroyGroup`) raise no event — learn them from the call and the `status` getter. |
+| `membersChanged` | `members` | The whole current member list, not a delta. |
+| `joinRequest` | `request: {id, name}` | A device knocked inside the open window. `accept(request.id)` to admit. A name is never authentication. |
+| `connectionChanged` | `connection` | The relay link transitioned. `disconnected` is normal and transient. |
+| `admissionDropped` | `name`, `reason` | A pending admission was dropped during concurrent membership changes. |
 
-| Event | Payload | When |
-|-------|---------|------|
-| `message` | `(blob: Buffer, senderId: string, messageId: string)` | Encrypted blob received. `messageId` is stable across re-delivery. |
-| `memberRequest` | `(requestToken: string, name: string)` | Remote device is knocking. Call `acceptPairingRequest(requestToken)` to admit. |
-| `memberJoined` | `(member: Member)` | Pairing completed or manifest sync'd a new peer. |
-| `memberLeft` | `(member: Member)` | Member was removed. |
-| `removedFromGroup` | — | **You** were removed by another member. |
-| `groupDestroyed` | — | Any member called `destroyGroup()`. Session is terminal. |
-| `connectionChanged` | `(connected: boolean)` | Relay connection state. `false` is normal and transient. |
+### Delivery issues (`onDeliveryIssue`)
+
+Optional — the library already does the right thing. Cases: `unreadable{reason}` (`malformed \| senderOutdated \| expired \| droppedWhileHeld`), `unauthorized`, `heldForUpgrade{version}`, `handlerGaveUp{messageId, error}`, `sendFailed{messageId, reason}` (`tooLarge \| malformed \| expired`).
 
 ### Errors
 
-All errors surface as `TrueSealError extends Error` with a typed `code` — one of
-exactly 14 canonical cases (no catch-all). The codes match the Swift and Kotlin
-SDKs character-for-character.
+All errors are `TrueSealError extends Error` with a typed `code` — exactly 14
+canonical cases (no catch-all), matching the Swift and Kotlin SDKs
+character-for-character:
 
-| `err.code` | Typed extras | Cause |
-|------------|--------------|-------|
-| `invalidRelayAddress` | — | Malformed relay host or wrong-length key passed to `create()` |
-| `invalidNamespace` | — | Illegal `namespace` |
-| `storage` | — | A durable write failed; nothing committed, retry is safe |
-| `closed` | — | Any call after `dispose()` |
-| `notMember` | `status` | `send()`/`removeMember()` without current membership |
-| `alreadyInGroup` | — | `joinGroup()` while in a group |
-| `invalidPairingToken` | — | `joinGroup()` received a malformed or spent token |
-| `pairingClosed` | — | Accept with the window closed or an unknown request id |
-| `groupFull` | `max` | Admission would exceed the group size limit |
-| `memberNotFound` | — | `removeMember()` with an unknown id |
-| `payloadTooLarge` | `max` | `send()` body over the Protocol Size Limit (61,440 bytes) |
-| `messageHandlerAlreadySet` | — | Second message-handler registration (one-shot) |
-| `storeTooNew` | `found`, `supported` | Session State was written by a newer release — upgrade the SDK |
-| `manifestVersionExhausted` | — | The group's version space is exhausted; the group must re-pair |
+`invalidRelayAddress` · `invalidNamespace` · `storage` · `closed` · `notMember{status}` · `alreadyInGroup` · `invalidPairingToken` · `pairingClosed` · `groupFull{max}` · `memberNotFound` · `payloadTooLarge{max}` · `messageHandlerAlreadySet` · `storeTooNew{found, supported}` · `manifestVersionExhausted`
+
+### Statics
+
+`TrueSeal.info` (`{sdkVersion, transportVersion, endToEndVersion}`) · `TrueSeal.maxPayloadBytes` (61,440) · `TrueSeal.maxGroupSize` (32) · `TrueSeal.parseRelayAddress(input)` → `RelayAddress` (`invalidRelayAddress` on malformed input).
 
 ---
 
@@ -144,25 +150,22 @@ SDKs character-for-character.
 These are non-obvious. Get them wrong and things fail quietly.
 
 **Storage — scope to your app.**
-Never rely on the default `~/.trueseal-sync`. Two apps sharing a path share a group identity. Use a path under your app's data directory and create it before passing it to `create()`.
+Never rely on the default `~/.trueseal-sync`. Two apps sharing a path share a group identity. Use a path under your app's data directory.
 
-**Startup order matters.**
-On boot, call `client.members` before attaching event listeners and seed your member list from the snapshot. If you attach listeners first, you'll miss state that's already persisted.
+**The object outlives the group.**
+After removal, leave or Destroy Group the library wipes the namespace, rotates to a fresh identity and the SAME object reaches `notJoined` and can pair again. No rebuild code.
 
 **Relay offline is not an error.**
-`connectionChanged(false)` is a normal transient state. Outbound sends queue in SQLite and replay automatically on reconnect. Do not surface this as a user-facing error or retry logic.
+`disconnected` is a normal transient state. Outbound sends queue in SQLite and replay automatically on reconnect. Do not surface it as a user-facing error or retry loop.
 
 **Make message handling idempotent.**
-Delivery is at least once, so the same message may arrive again after reconnecting. Persist `messageId` in the same transaction as your application update. If that ID already exists, ignore the duplicate. Treat the ID as opaque; never parse it or derive application meaning from it.
+Delivery is at least once, so the same message can arrive again after a crash mid-handling. Persist `message.id` in the same transaction as your application update; if that ID already exists, ignore the duplicate. Treat the ID as opaque; never parse it.
 
-**`pairingToken()` is stateless.**
-The token encodes your permanent keypair — it doesn't open a timed window. UX for how long to accept requests is entirely your responsibility. Call `cancelPairing()` after accepting to enforce single-use.
+**Return from the message handler promptly.**
+The core awaits the handler before acking, and a handler parked for more than ~75 seconds wedges delivery for everything behind it and the client declares the session dead. Queue long work; don't await it in the handler.
 
-**`destroyGroup()` is terminal.**
-After this fires (on any device), stop all listeners, delete `storageDir`, and call `TruesealSyncClient.create()` with a fresh storage path to get a new identity.
-
-**Session is a singleton.**
-One instance per app lifecycle. Do not create multiple clients against the same `storageDir` + `namespace`.
+**One session per storageDir + namespace.**
+Do not open two `TrueSeal` objects against the same store.
 
 ---
 
@@ -171,11 +174,10 @@ One instance per app lifecycle. Do not create multiple clients against the same 
 TSFNs are `unref()`'d — they never prevent process exit. For explicit teardown on window close:
 
 ```ts
-// In main process / window lifecycle
-mainWindow.on('close', () => client.dispose())
+mainWindow.on('close', () => ts.close())
 
 // Or with TC39 'using' (TypeScript 5.2+)
-using client = await TruesealSyncClient.create(config)
+using ts = await TrueSeal.open(relay, options)
 ```
 
 ---
@@ -191,8 +193,8 @@ npm test
 Smoke tests (full pairing flow) need a local relay:
 
 ```bash
-cd ../trueseal-relay && ./trueseal-relay -config relay.toml
-RELAY_PUB_KEY=<64-hex> npm test   # override key if needed
+cd ../trueseal-relay && TRUESEAL_RELAY_KEYPAIR_PATH=/tmp/relay/keypair.hex TRUESEAL_RELAY_STORE_SQLITE_PATH=/tmp/relay/inbox.db ./trueseal-relay
+RELAY_PUB_KEY=<64-hex> npm test   # the relay's `pubkey` command prints it
 SKIP_RELAY_TESTS=1 npm test        # skip smoke tests
 ```
 
@@ -200,8 +202,7 @@ SKIP_RELAY_TESTS=1 npm test        # skip smoke tests
 
 ## Further reading
 
-- [trueseal-sync integration guide](https://trueseal.dev/docs/guides/integrating-trueseal-sync) — concepts, pairing ceremony, session lifecycle, UX patterns
-- [trueseal ecosystem docs](https://trueseal.dev/docs) — architecture, relay deployment, wire protocol
+- [trueseal ecosystem docs](https://trueseal.dev/docs) — architecture, pairing, delivery, relay deployment
 - [trueseal-relay](https://github.com/julianbonomini/trueseal-relay) — run your own relay
 
 ---
