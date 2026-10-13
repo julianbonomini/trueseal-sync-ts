@@ -564,8 +564,10 @@ export class TrueSeal {
             complete(err instanceof Error ? err.message : String(err))
             return
           }
-          if (result instanceof Promise) {
-            result.then(
+          // Thenable check rather than `instanceof Promise`: cross-realm
+          // promises (Electron main/renderer) fail instanceof.
+          if (result !== null && typeof result === 'object' && typeof (result as Promise<void>).then === 'function') {
+            ;(result as Promise<void>).then(
               () => complete(null),
               (err) => complete(err instanceof Error ? err.message : String(err)),
             )
