@@ -12,7 +12,8 @@ crate-type = ["cdylib"]
 napi = { version = "2", default-features = false, features = ["napi4", "async"] }
 napi-derive = "2"
 trueseal-sync = { path = "../trueseal-sync" }
-base64 = "0.22"
+async-trait = "0.1"
+hex = "0.4"
 
 [build-dependencies]
 napi-build = "2"
