@@ -97,11 +97,25 @@ jobs:
 
       - name: Test
         shell: bash
+        env:
+          # SDK-2 (#10): the vectors test writes the machine-readable G5
+          # report the Release Conductor attaches as Release Evidence.
+          TRUSEAL_VECTOR_REPORT: g5-vector-report-${{ matrix.os }}-node${{ matrix.node }}.json
         run: npm test 2>&1 | tee test-output.txt
 
       - name: Report skipped tests
         if: always()
         run: node scripts/report-skips.mjs test-output.txt
+
+      - name: Upload the G5 vector report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g5-vector-report-${{ matrix.os }}-node${{ matrix.node }}
+          path: g5-vector-report-${{ matrix.os }}-node${{ matrix.node }}.json
+          # A missing report on an otherwise-green run is itself a failure:
+          # the Conductor consumes one artifact per platform binary.
+          if-no-files-found: error
 
       - name: Verify install (pack + fresh-project require/import/tsc)
         run: node scripts/verify-install.mjs
