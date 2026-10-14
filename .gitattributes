@@ -1,0 +1,6 @@
+# SDK-2 (#10): the vendored test vectors are a PINNED ARTIFACT — the loader
+# verifies their SHA-256 against the upstream pin (G8). Text conversion
+# (CRLF on Windows checkouts) would change the bytes and trip the drift
+# refusal; -text disables line-ending conversion so the checkout is
+# byte-identical on every platform.
+__tests__/vectors/** -text
