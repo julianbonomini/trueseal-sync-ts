@@ -198,7 +198,6 @@ jobs:
           cp "trueseal-sync-ts.${{ matrix.dir }}.node" "$STAGE/trueseal-sync-ts.${{ matrix.triple }}.node"
           TARBALL=$(cd "$STAGE" && npm pack --pack-destination "$OLDPWD" | tail -1)
           echo "packed: $TARBALL"
-          echo "tarball=$TARBALL" >> "$GITHUB_ENV"
 
       - name: Upload the platform tarball
         uses: actions/upload-artifact@v4
