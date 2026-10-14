@@ -13,7 +13,7 @@ napi = { version = "3", default-features = false, features = ["napi4", "async", 
 napi-derive = "3"
 # TS-1 (#14): the core is a pinned GIT dependency (G8 — no sibling path, no
 # floating ref). The rev MUST match core-rev.txt; CI's pin guard enforces it.
-trueseal-sync = { git = "https://github.com/julianbonomini/trueseal-sync", rev = "af16c4e7dbca21e5eaad4a816c2774b9cf8e4d7f" }
+trueseal-sync = { git = "https://github.com/julianbonomini/trueseal-sync", rev = "e9f08feefd2a893cf6b53f5364c20d9e94a64e6a" }
 async-trait = "0.1"
 hex = "0.4"
 serde_json = "1"
