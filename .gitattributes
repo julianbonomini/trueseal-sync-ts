@@ -4,3 +4,7 @@
 # refusal; -text disables line-ending conversion so the checkout is
 # byte-identical on every platform.
 __tests__/vectors/** -text
+
+# SDK-4 (#12): the vendored Shared Facts are a PINNED ARTIFACT — same CRLF
+# hazard as the vectors pin (see above); byte-identical checkout on every OS.
+Parity/** -text
