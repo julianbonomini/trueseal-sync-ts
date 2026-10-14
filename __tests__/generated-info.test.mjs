@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 
 import indexPkg from '../dist/index.js'
 const { TrueSeal } = indexPkg
@@ -56,7 +57,9 @@ test('ADR alarm: the values match ADR-0022/0025/0027/0030', () => {
 
 // ── The literal-ban guard: negative tests ───────────────────────────────────
 
-const GUARD = new URL('../scripts/check-no-literal-limits.mjs', import.meta.url).pathname
+// fileURLToPath, not URL.pathname — on Windows the latter yields /D:/...
+// and the spawned node mangles it into 'D:\D:\...'.
+const GUARD = fileURLToPath(new URL('../scripts/check-no-literal-limits.mjs', import.meta.url))
 
 function runGuard(dir) {
   try {
