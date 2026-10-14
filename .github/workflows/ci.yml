@@ -61,11 +61,71 @@ jobs:
             exit 1
           fi
 
+      # SDK-4 (#12): G8 forbids floating inputs anywhere — floating release
+      # URLs, branch/tag refs on the core dep (rev = only), floating image
+      # tags. The patterns are built by concatenation so this guard's own
+      # file never matches them (a guard that greps for a literal it itself
+      # contains fails on every run).
+      - name: No floating cross-repo refs anywhere
+        shell: bash
+        run: |
+          FLOAT_URL='releases/''latest'
+          FLOAT_TAG=':''latest'
+          if grep -rn "$FLOAT_URL" .github scripts; then
+            echo "floating release URL — G8 requires an exact version + checksum" >&2
+            exit 1
+          fi
+          if grep -nP 'trueseal-sync = \{ git = [^}]*\b(branch|tag) =' Cargo.toml; then
+            echo "the core dep floats on a branch/tag — G8 requires rev = <full SHA>" >&2
+            exit 1
+          fi
+          if grep -rn "$FLOAT_TAG" .github/workflows; then
+            echo "floating image tag — G8 requires exact pins" >&2
+            exit 1
+          fi
+
       # SDK-3 (#11): version/limit values are generated from the core — a
       # hand-written literal in SDK sources is a drift bug. Negative-tested
       # in __tests__/generated-info.test.mjs.
       - name: No hand-written version or limit literals
         run: node scripts/check-no-literal-limits.mjs
+
+  parity:
+    # SDK-4 (#12): the G12 parity gate — the compiled runtime vocabularies
+    # vs the SHA-256-pinned vendored Shared Facts (scripts/check-parity.mjs).
+    # Runs on every PR; the report artifact is Release Evidence for the
+    # Conductor. The self-test is the negative control the issue requires:
+    # renamed / missing / extra case mutations must all flip the verdict.
+    needs: pin-guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Build (parity checks the compiled output)
+        run: npm ci && npm run build
+
+      - name: G12 parity check
+        run: |
+          node scripts/check-parity.mjs --report trueseal-g12-parity-report.json
+          node scripts/check-parity.mjs --self-test
+
+      - name: Upload the G12 parity report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trueseal-g12-parity-report
+          path: trueseal-g12-parity-report.json
+          # A missing report on an otherwise-green run is itself a failure.
+          if-no-files-found: error
 
   build-test:
     needs: pin-guard

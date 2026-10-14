@@ -1,0 +1,190 @@
+name: Promote
+
+# SDK-4 (#12) / e2e ADR-0002: promotion publishes the EXACT bytes the
+# candidate (candidate.yml) staged and the gate tested — the same draft,
+# published, no rebuild. The immutable tag v<version> is created ONLY here,
+# on the release commit (release/v<version>) whose manifests carry the
+# verified version stamps and core pin; tags are never moved (sync
+# ADR-0030), so a bad release is a new patch version.
+#
+# Idempotent (ADR-0002 "Failures": a failed promotion is retried forward; a
+# re-run publishes only missing channels): if v<version> is already
+# published this is a no-op success.
+#
+# npm registry publish is deliberately NOT a step: the first publish of each
+# package is OPS-4 (maintainer-only, then npm switches to trusted
+# publishing). This workflow publishes the GitHub Release — the channel the
+# gate's Release Evidence names — with the exact tarballs npm will receive.
+# The OPS-4 seam: after the org exists (A1) and the first manual publish is
+# done, a follow-up adds `npm publish --provenance` per tarball here, gated
+# on the same verification this workflow already performs.
+#
+# The Release Conductor (trueseal-e2e) dispatches this after a green gate;
+# a maintainer can do the same by hand:
+#   gh workflow run promote.yml -f version=0.6.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Lockstep version to promote, e.g. 0.6.0 (no leading v)"
+        required: true
+        type: string
+
+concurrency:
+  group: promote-ts-${{ inputs.version }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    name: verify staged bytes + publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate the version input
+        run: |
+          echo "${{ inputs.version }}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "FAIL: version must be X.Y.Z without a leading v"; exit 1; }
+
+      - name: Resolve the staged release
+        id: staged
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ inputs.version }}"
+          if ! gh release view "$TAG" --json isDraft,targetCommitish > /tmp/staged.json 2>/dev/null; then
+            echo "FAIL: no release $TAG — run the candidate build (candidate.yml) for ${{ inputs.version }} first" >&2
+            exit 1
+          fi
+          IS_DRAFT=$(jq -r .isDraft /tmp/staged.json)
+          TARGET=$(jq -r .targetCommitish /tmp/staged.json)
+          echo "is_draft=$IS_DRAFT" >> "$GITHUB_OUTPUT"
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "staged: draft=$IS_DRAFT target=$TARGET"
+
+      # ADR-0002: a re-run on an already-live channel has nothing to do.
+      - name: Already published — idempotent no-op
+        if: steps.staged.outputs.is_draft == 'false'
+        run: echo "v${{ inputs.version }} is already published; nothing to do"
+
+      # Tags are immutable (ADR-0030). If the tag exists while the release is
+      # still a draft, someone created it out of band — never overwrite or
+      # move it; stop and let a human untangle.
+      - name: Refuse to touch an existing tag
+        if: steps.staged.outputs.is_draft == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ inputs.version }}"
+          if gh api "repos/${{ github.repository }}/git/refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "FAIL: tag $TAG already exists on origin but the release is still a draft — tags are never moved; investigate by hand" >&2
+            exit 1
+          fi
+
+      - name: Checkout the release commit
+        if: steps.staged.outputs.is_draft == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.staged.outputs.target }}
+
+      - name: Download the staged tarballs
+        if: steps.staged.outputs.is_draft == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/staged-bytes
+          gh release download "v${{ inputs.version }}" --dir /tmp/staged-bytes --clobber
+          ls -la /tmp/staged-bytes
+
+      # G8/G9 hard gate on the bytes being promoted: the release commit's
+      # stamps must name THIS version and the core pin must be exact; the
+      # staged tarballs must match the staged checksums manifest; and the
+      # checksums manifest must cover exactly the six expected artifacts
+      # (main + five platform). If the gate tested these bytes, publishing
+      # them is safe; anything else fails here.
+      - name: Verify the staged bytes against the release commit's pins
+        if: steps.staged.outputs.is_draft == 'true'
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -e
+          cd /tmp/staged-bytes
+          CHECKSUMS="trueseal-sync-ts-$VERSION-checksums.txt"
+          [ -f "$CHECKSUMS" ] || { echo "FAIL: checksums manifest missing from the staged release" >&2; exit 1; }
+          sha256sum -c "$CHECKSUMS"
+          [ "$(ls -1 *.tgz | wc -l)" -eq 6 ] \
+            || { echo "FAIL: expected 6 staged tarballs (main + 5 platform), found $(ls -1 *.tgz | wc -l)" >&2; exit 1; }
+          [ "$(wc -l < "$CHECKSUMS")" -eq 6 ] \
+            || { echo "FAIL: checksums manifest does not cover exactly 6 artifacts" >&2; exit 1; }
+
+      - name: Verify the release commit's stamps and core pin
+        if: steps.staged.outputs.is_draft == 'true'
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -e
+          node -e '
+            const fs = require("fs")
+            const v = process.env.VERSION
+            const main = JSON.parse(fs.readFileSync("package.json", "utf8"))
+            if (main.version !== v) throw new Error(`release commit package.json version ${main.version} != ${v}`)
+            const opt = Object.entries(main.optionalDependencies ?? {})
+            if (opt.length !== 5) throw new Error(`optionalDependencies has ${opt.length} entries, want 5`)
+            for (const [name, pin] of opt) {
+              if (pin !== v) throw new Error(`optionalDependencies[${name}] = ${pin}, want ${v}`)
+            }
+            for (const dir of fs.readdirSync("npm")) {
+              const p = JSON.parse(fs.readFileSync(`npm/${dir}/package.json`, "utf8"))
+              if (p.version !== v) throw new Error(`npm/${dir} version ${p.version} != ${v}`)
+            }
+            console.log(`stamps verified on the release commit: ${v}`)
+          '
+          CORE_REV=$(tr -d '[:space:]' < core-rev.txt)
+          grep -q "rev = \"$CORE_REV\"" Cargo.toml \
+            || { echo "FAIL: release commit Cargo.toml does not pin the core at core-rev.txt ($CORE_REV)" >&2; exit 1; }
+          grep -A2 'name = "trueseal-sync"' Cargo.lock | grep -q "$CORE_REV" \
+            || { echo "FAIL: release commit Cargo.lock does not pin trueseal-sync at $CORE_REV" >&2; exit 1; }
+          echo "core pin verified on the release commit: $CORE_REV"
+
+      # Release notes: the one lockstep changelog lives in trueseal-sync with
+      # a section per SDK (ADR-0002 "Release notes"); every GitHub Release in
+      # the group links to it.
+      - name: Publish the staged bytes (creates the immutable tag)
+        if: steps.staged.outputs.is_draft == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          TAG="v$VERSION"
+          CORE_REV=$(tr -d '[:space:]' < core-rev.txt)
+          cat > /tmp/release-notes.md <<EOF
+          TrueSeal $VERSION — TS SDK (lockstep release).
+
+          Changelog: the TrueSeal $VERSION section of the [one lockstep changelog](https://github.com/julianbonomini/trueseal-sync/blob/main/CHANGELOG.md), subsection **trueseal-sync-ts** (e2e ADR-0002: one changelog per TrueSeal Release, linked from every release in the group; breaking releases carry upgrade steps there).
+
+          Install: \`npm install @trueseal/sync@$VERSION\` (registry publish: OPS-4 — this release carries the exact tarballs). Node 20+; platforms: macOS arm64/x64, Linux x64/arm64 (glibc), Windows x64. This is a Developer Preview: any 0.x release may break the API, the wire format or stored data without notice (ADR-0033).
+
+          - core: trueseal-sync \`$CORE_REV\` (pinned at candidate time; Cargo.lock is the checksum)
+          - artifacts: main tarball + five per-platform tarballs, with \`trueseal-sync-ts-$VERSION-checksums.txt\`
+          EOF
+          gh release edit "$TAG" \
+            --title "TrueSeal $VERSION" \
+            --notes-file /tmp/release-notes.md \
+            --draft=false \
+            --prerelease=false
+          echo "published $TAG"
+
+      - name: Confirm the tag is live on the release commit
+        if: steps.staged.outputs.is_draft == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ inputs.version }}"
+          git ls-remote --tags origin "$TAG" | grep -q "$TAG" \
+            || { echo "FAIL: tag $TAG not on origin after publish" >&2; exit 1; }
+          gh release view "$TAG" --json isDraft --jq .isDraft | grep -q false \
+            || { echo "FAIL: release still a draft after publish" >&2; exit 1; }
+          echo "OK: $TAG published; tag on origin at ${{ steps.staged.outputs.target }}"

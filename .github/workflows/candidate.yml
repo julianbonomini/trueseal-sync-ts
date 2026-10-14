@@ -1,0 +1,295 @@
+name: Candidate
+
+# SDK-4 (#12) / e2e ADR-0002: this is the CANDIDATE build. Dispatch-only —
+# pushing a tag triggers nothing, and tags are created exactly once, at
+# promotion, by promote.yml (tags are never moved; sync ADR-0030).
+#
+#   candidate:  gh workflow run candidate.yml -f version=0.6.0 [-f dry_run=true]
+#   promote:    gh workflow run promote.yml   -f version=0.6.0
+#
+# What it stages (npm-shaped, draft GitHub Release v<version>, no tag):
+#   trueseal-sync-<version>.tgz                 — the main package (JS + loader)
+#   trueseal-sync-<platform>-<version>.tgz ×5   — the per-platform native packages
+#   trueseal-sync-ts-<version>-checksums.txt    — sha256 of every tarball
+# The release commit (release/v<version>) records the version stamps and the
+# core pin (Cargo.toml rev + core-rev.txt + Cargo.lock — the lock is the
+# checksum, ADR-0002 step 4), so gates G8/G9 read the exact pins out of the
+# tree the tag will name.
+#
+# npm registry publish is NOT here and not in promote.yml: the first publish
+# is OPS-4 (maintainer), trusted publishing after that. The GitHub Release
+# carries the exact tarballs npm would receive.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Lockstep release version without the v prefix (e.g. 0.6.0)"
+        required: true
+        type: string
+      dry_run:
+        description: "Build, test, pack and checksum only — no branch, no release"
+        required: false
+        type: boolean
+        default: false
+      # Conductor override (e2e ADR-0002 step 4): the Release Conductor may
+      # build this SDK's candidate against a core CANDIDATE commit (staged by
+      # the core's candidate.yml) instead of the committed core-rev.txt pin.
+      # The override is an exact commit SHA — it changes WHICH pinned bytes,
+      # never WHETHER the bytes are pinned (G8).
+      core_rev:
+        description: "Override core commit SHA (40 hex; default: the committed core-rev.txt pin)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  resolve-pin:
+    name: Resolve the effective core pin
+    runs-on: ubuntu-latest
+    outputs:
+      core_rev: ${{ steps.pin.outputs.core_rev }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate the version input
+        run: |
+          echo "${{ inputs.version }}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "::error::version must be X.Y.Z without a v prefix (got '${{ inputs.version }}')"; exit 1; }
+      - name: Resolve the core pin
+        id: pin
+        run: |
+          OVERRIDE="${{ inputs.core_rev }}"
+          if [ -n "$OVERRIDE" ]; then
+            echo "$OVERRIDE" | grep -qE '^[0-9a-f]{40}$' \
+              || { echo "::error::core_rev must be a full 40-char commit SHA — an override is still an exact pin (G8)"; exit 1; }
+            echo "core_rev=$OVERRIDE" >> "$GITHUB_OUTPUT"
+            echo "conductor override: core $OVERRIDE"
+          else
+            COMMITTED=$(tr -d '[:space:]' < core-rev.txt)
+            echo "$COMMITTED" | grep -qE '^[0-9a-f]{40}$' \
+              || { echo "::error::core-rev.txt does not contain a 40-char SHA"; exit 1; }
+            echo "core_rev=$COMMITTED" >> "$GITHUB_OUTPUT"
+            echo "committed pin: core $COMMITTED"
+          fi
+
+  apply-pin:
+    name: Stamp the release commit
+    needs: resolve-pin
+    runs-on: ubuntu-latest
+    outputs:
+      branch: release/v${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # The core pin lives in Cargo.toml (rev =) + core-rev.txt, and
+      # Cargo.lock is the checksum (ADR-0002 step 4). On a conductor override
+      # all three move together; without one this step verifies they agree.
+      - name: Apply the effective core pin
+        env:
+          CORE_REV: ${{ needs.resolve-pin.outputs.core_rev }}
+        run: |
+          # ubuntu runner: GNU sed.
+          sed -i -e "s|trueseal-sync = { git = \"https://github.com/julianbonomini/trueseal-sync\", rev = \"[0-9a-f]*\" }|trueseal-sync = { git = \"https://github.com/julianbonomini/trueseal-sync\", rev = \"$CORE_REV\" }|" Cargo.toml
+          grep -q "rev = \"$CORE_REV\"" Cargo.toml \
+            || { echo "::error::failed to pin Cargo.toml to $CORE_REV"; exit 1; }
+          printf '%s\n' "$CORE_REV" > core-rev.txt
+          cargo update -p trueseal-sync
+          grep -A2 'name = "trueseal-sync"' Cargo.lock | grep -q "$CORE_REV" \
+            || { echo "::error::Cargo.lock does not pin trueseal-sync at $CORE_REV"; exit 1; }
+          echo "core pinned at $CORE_REV (Cargo.toml + core-rev.txt + Cargo.lock agree)"
+
+      - name: Stamp the lockstep version
+        run: node scripts/stamp-version.mjs "${{ inputs.version }}"
+
+      # G9 on the release commit itself: the manifests must name THIS version.
+      - name: Verify the stamps
+        run: |
+          node -e '
+            const fs = require("fs")
+            const v = "${{ inputs.version }}"
+            const main = JSON.parse(fs.readFileSync("package.json", "utf8"))
+            if (main.version !== v) throw new Error(`package.json version ${main.version} != ${v}`)
+            for (const [name, pin] of Object.entries(main.optionalDependencies)) {
+              if (pin !== v) throw new Error(`optionalDependencies[${name}] = ${pin}, want ${v}`)
+            }
+            for (const dir of fs.readdirSync("npm")) {
+              const p = JSON.parse(fs.readFileSync(`npm/${dir}/package.json`, "utf8"))
+              if (p.version !== v) throw new Error(`npm/${dir} version ${p.version} != ${v}`)
+            }
+            console.log(`stamps verified: ${v} across main + 5 platform manifests + optionalDependencies`)
+          '
+
+      - name: Commit the release pin
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "release/v${{ inputs.version }}"
+          git add package.json package-lock.json npm/*/package.json Cargo.toml core-rev.txt Cargo.lock
+          git commit -m "chore: release pin for v${{ inputs.version }} (version stamps + core pin)"
+          # No force: a candidate is staged once per version; a re-candidate
+          # for the same version must delete the branch first (promotion
+          # never rebuilds).
+          git push origin "release/v${{ inputs.version }}"
+
+  build-platform:
+    name: Build + pack ${{ matrix.dir }}
+    needs: apply-pin
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The five npm targets (release spec). linux-arm64 is a cross-build
+          # (no runner executes the binary here — runtime coverage is e2e's).
+          - { os: macos-14,        dir: darwin-arm64,    triple: aarch64-apple-darwin,    cross: false }
+          - { os: macos-15-intel,  dir: darwin-x64,      triple: x86_64-apple-darwin,     cross: false }
+          - { os: ubuntu-latest,   dir: linux-x64-gnu,   triple: x86_64-unknown-linux-gnu, cross: false }
+          - { os: ubuntu-latest,   dir: linux-arm64-gnu, triple: aarch64-unknown-linux-gnu, cross: true }
+          - { os: windows-latest,  dir: win32-x64-msvc,  triple: x86_64-pc-windows-msvc,  cross: false }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.apply-pin.outputs.branch }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.cross && 'aarch64-unknown-linux-gnu' || '' }}
+
+      - name: Install the aarch64 cross linker
+        if: matrix.cross
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Build the native module
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            npm ci --ignore-scripts
+            npx napi build --target aarch64-unknown-linux-gnu --release
+          else
+            npm ci --ignore-scripts
+            npx napi build --platform --release
+          fi
+        shell: bash
+
+      - name: Stage and pack the platform package
+        shell: bash
+        run: |
+          set -e
+          STAGE="platform-stage"
+          rm -rf "$STAGE" && mkdir -p "$STAGE"
+          cp -R "npm/${{ matrix.dir }}/." "$STAGE/"
+          cp "trueseal-sync-ts.${{ matrix.dir }}.node" "$STAGE/trueseal-sync-ts.${{ matrix.triple }}.node"
+          TARBALL=$(cd "$STAGE" && npm pack --pack-destination "$OLDPWD" | tail -1)
+          echo "packed: $TARBALL"
+
+      - name: Upload the platform tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-tarball-${{ matrix.dir }}
+          path: trueseal-sync-${{ matrix.dir }}-*.tgz
+          if-no-files-found: error
+
+  pack-main:
+    name: Test + pack the main package
+    needs: apply-pin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.apply-pin.outputs.branch }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # The candidate is built from the release commit and TESTED there —
+      # the gate tests the bytes users install (ADR-0002 step 3).
+      - name: Build and test
+        run: npm ci && npm run build && npm test
+
+      - name: G12 parity gate on the candidate
+        run: |
+          node scripts/check-parity.mjs --report trueseal-g12-parity-report.json
+          node scripts/check-parity.mjs --self-test
+
+      - name: Upload the G12 parity report
+        uses: actions/upload-artifact@v4
+        with:
+          name: trueseal-g12-parity-report
+          path: trueseal-g12-parity-report.json
+          if-no-files-found: error
+
+      - name: Pack the main package
+        run: npm pack --pack-destination .
+
+      - name: Upload the main tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: main-tarball
+          path: trueseal-sync-*.tgz
+          if-no-files-found: error
+
+  stage:
+    name: Checksums + draft candidate release
+    needs: [resolve-pin, build-platform, pack-main]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all tarballs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-tarball*"
+          merge-multiple: true
+
+      # One checksums file over every tarball — promote.yml re-verifies it
+      # against the staged bytes before publishing.
+      - name: Compute the checksums manifest
+        run: |
+          ls -1 *.tgz | sort | while read -r f; do
+            sha256sum "$f"
+          done > "trueseal-sync-ts-${{ inputs.version }}-checksums.txt"
+          cat "trueseal-sync-ts-${{ inputs.version }}-checksums.txt"
+          [ "$(wc -l < "trueseal-sync-ts-${{ inputs.version }}-checksums.txt")" -eq 6 ] \
+            || { echo "::error::expected 6 tarballs (main + 5 platform)"; exit 1; }
+
+      - name: Create the draft candidate release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          name: TrueSeal ${{ inputs.version }} (candidate) — TS SDK
+          draft: true
+          prerelease: true
+          target_commitish: release/v${{ inputs.version }}
+          files: |
+            *.tgz
+            trueseal-sync-ts-${{ inputs.version }}-checksums.txt
+          body: |
+            Candidate for the TrueSeal ${{ inputs.version }} lockstep release — TS SDK.
+
+            - **core**: trueseal-sync `${{ needs.resolve-pin.outputs.core_rev }}` (pinned in Cargo.toml rev + core-rev.txt; Cargo.lock is the checksum — ADR-0002 step 4)
+            - **artifacts**: the main tarball + five per-platform tarballs + the checksums manifest — the exact bytes npm would receive (registry publish is OPS-4, not this workflow)
+            - **release commit**: `release/v${{ inputs.version }}` (version stamps verified across all six manifests)
+            - **G12**: parity report attached as a workflow artifact on this run
+
+            Promotion (promote.yml) re-verifies the staged bytes against the release commit's pins, creates the immutable tag `v${{ inputs.version }}` and publishes this draft — same bytes, no rebuild (e2e ADR-0002).
+          fail_on_unmatched_files: true
