@@ -62,3 +62,19 @@ Release Evidence for the Conductor.
   with install verification and G5 vector reports, and the linux-arm64
   cross-build leg.
 - `candidate.yml` / `promote.yml` — dispatch-only; see above.
+
+## Running the tests
+
+Unit tests run without a relay:
+
+```bash
+npm test
+```
+
+The relay-backed smoke tests (full pairing flow) need a local relay:
+
+```bash
+cd ../trueseal-relay && TRUESEAL_RELAY_KEYPAIR_PATH=/tmp/relay/keypair.hex TRUESEAL_RELAY_STORE_SQLITE_PATH=/tmp/relay/inbox.db ./trueseal-relay
+RELAY_PUB_KEY=<64-hex> npm test   # the relay's `pubkey` command prints it
+SKIP_RELAY_TESTS=1 npm test        # skip the smoke tests
+```
